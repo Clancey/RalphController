@@ -70,7 +70,7 @@ public static class ScaffoldPrompts
 
         Create a prompt.md file - the main instruction file for the Ralph loop.
 
-        This prompt is read every iteration. It should be CONCISE (under 200 words is ideal).
+        This prompt is read every iteration. It should be CONCISE (under 300 words is ideal).
         Less is more - a simple prompt outperforms a complex one.
 
         The prompt should instruct the agent to:
@@ -88,6 +88,13 @@ public static class ScaffoldPrompts
         - "Don't assume not implemented - search first"
         - "After implementing, run tests for that unit"
         - "Update the plan with learnings"
+
+        IMPORTANT - Agent usage instructions to include:
+        - "Use the Task tool to spawn agents for parallel work (research, code generation, file exploration)"
+        - "Spawn multiple agents in parallel when tasks are independent"
+        - "NEVER run builds or tests in parallel - only one build/test at a time to avoid conflicts"
+        - "Wait for build/test results before spawning new build/test tasks"
+        - "Use agents liberally for: reading docs, exploring code, generating boilerplate, writing tests"
 
         Customize the prompt for this specific project type based on the context.
 

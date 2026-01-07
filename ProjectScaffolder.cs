@@ -223,6 +223,12 @@ public class ProjectScaffolder
         Commit on success.
 
         Don't assume not implemented - search first.
+
+        ## Agent Usage
+        - Use Task tool to spawn agents for parallel work (research, exploring, generating code)
+        - Spawn multiple agents when tasks are independent
+        - NEVER run builds/tests in parallel - one at a time only
+        - Use agents liberally for reading, exploring, and generating
         """;
 
     private static string GetDefaultImplementationPlan() => """

@@ -9,7 +9,10 @@ public enum AIProvider
     Claude,
 
     /// <summary>OpenAI Codex CLI</summary>
-    Codex
+    Codex,
+
+    /// <summary>GitHub Copilot CLI</summary>
+    Copilot
 }
 
 /// <summary>
@@ -51,5 +54,16 @@ public record AIProviderConfig
         // --dangerously-bypass-approvals-and-sandbox for full auto mode
         Arguments = "exec --dangerously-bypass-approvals-and-sandbox -",
         UsesStdin = true  // Codex exec reads from stdin when using "-"
+    };
+
+    public static AIProviderConfig ForCopilot(string? executablePath = null) => new()
+    {
+        Provider = AIProvider.Copilot,
+        ExecutablePath = executablePath ?? "copilot",
+        // -p for programmatic mode (non-interactive)
+        // --allow-all-tools for autonomous execution without approval prompts
+        Arguments = "--allow-all-tools -p",
+        UsesStdin = false,  // Copilot takes prompt as argument after -p
+        UsesTempFile = true // Use temp file for multi-line prompts
     };
 }

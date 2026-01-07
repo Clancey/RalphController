@@ -217,23 +217,44 @@ if (args.Contains("--test-output"))
 
 // Parse command line arguments
 var targetDir = args.Length > 0 && !args[0].StartsWith("-") ? args[0] : null;
-var provider = AIProvider.Claude;
+AIProvider? providerFromArgs = null;
+string? initSpec = null;
+var initMode = false;
 
-// Check for provider flag
+// Check for flags
 for (int i = 0; i < args.Length; i++)
 {
     if (args[i] == "--provider" && i + 1 < args.Length)
     {
-        provider = args[i + 1].ToLower() switch
+        providerFromArgs = args[i + 1].ToLower() switch
         {
             "codex" => AIProvider.Codex,
             "claude" => AIProvider.Claude,
-            _ => AIProvider.Claude
+            "copilot" => AIProvider.Copilot,
+            _ => null
         };
     }
     else if (args[i] == "--codex")
     {
-        provider = AIProvider.Codex;
+        providerFromArgs = AIProvider.Codex;
+    }
+    else if (args[i] == "--copilot")
+    {
+        providerFromArgs = AIProvider.Copilot;
+    }
+    else if (args[i] == "--claude")
+    {
+        providerFromArgs = AIProvider.Claude;
+    }
+    else if (args[i] == "--init" || args[i] == "--spec")
+    {
+        initMode = true;
+        // Check if next arg is the spec (not another flag)
+        if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
+        {
+            initSpec = args[i + 1];
+            i++; // Skip the spec value in next iteration
+        }
     }
 }
 
@@ -243,20 +264,10 @@ AnsiConsole.Write(new FigletText("Ralph")
     .Color(Color.Blue));
 AnsiConsole.MarkupLine("[dim]Autonomous AI Coding Loop Controller[/]\n");
 
-// Prompt for target directory if not provided
+// Default to current directory if not provided
 if (string.IsNullOrEmpty(targetDir))
 {
-    targetDir = AnsiConsole.Prompt(
-        new TextPrompt<string>("[yellow]Enter target directory:[/]")
-            .DefaultValue(Directory.GetCurrentDirectory())
-            .Validate(dir =>
-            {
-                if (!Directory.Exists(dir))
-                {
-                    return ValidationResult.Error("[red]Directory does not exist[/]");
-                }
-                return ValidationResult.Success();
-            }));
+    targetDir = Directory.GetCurrentDirectory();
 }
 
 // Validate directory
@@ -269,21 +280,49 @@ if (!Directory.Exists(targetDir))
 targetDir = Path.GetFullPath(targetDir);
 AnsiConsole.MarkupLine($"[green]Target directory:[/] {targetDir}");
 
-// Prompt for provider if not specified via command line
-if (args.All(a => a != "--provider" && a != "--codex"))
+// Load project settings
+var projectSettings = ProjectSettings.Load(targetDir);
+var savedProvider = projectSettings.Provider;
+
+// Determine provider: command line > saved > prompt
+AIProvider provider;
+var providerWasSelected = false;
+
+if (providerFromArgs.HasValue)
 {
+    // Use command line argument
+    provider = providerFromArgs.Value;
+}
+else if (savedProvider.HasValue)
+{
+    // Use saved provider from project settings
+    provider = savedProvider.Value;
+    AnsiConsole.MarkupLine($"[dim]Using saved provider from .ralph.json[/]");
+}
+else
+{
+    // Prompt for provider
     provider = AnsiConsole.Prompt(
         new SelectionPrompt<AIProvider>()
             .Title("[yellow]Select AI provider:[/]")
-            .AddChoices(AIProvider.Claude, AIProvider.Codex));
+            .AddChoices(AIProvider.Claude, AIProvider.Codex, AIProvider.Copilot));
+    providerWasSelected = true;
 }
 
 AnsiConsole.MarkupLine($"[green]Provider:[/] {provider}");
+
+// Save provider to project settings if it changed or was newly selected
+if (providerWasSelected || (providerFromArgs.HasValue && providerFromArgs != savedProvider))
+{
+    projectSettings.Provider = provider;
+    projectSettings.Save(targetDir);
+}
 
 // Create configuration
 var providerConfig = provider switch
 {
     AIProvider.Codex => AIProviderConfig.ForCodex(),
+    AIProvider.Copilot => AIProviderConfig.ForCopilot(),
     _ => AIProviderConfig.ForClaude()
 };
 
@@ -294,11 +333,88 @@ var config = new RalphConfig
     ProviderConfig = providerConfig
 };
 
+// Handle init mode - regenerate all project files from new spec
+if (initMode)
+{
+    AnsiConsole.MarkupLine("\n[blue]Initializing project with new specification...[/]");
+
+    string projectContext;
+
+    if (!string.IsNullOrEmpty(initSpec))
+    {
+        // Check if initSpec is a file path
+        var specPath = Path.IsPathRooted(initSpec)
+            ? initSpec
+            : Path.Combine(targetDir, initSpec);
+
+        if (File.Exists(specPath))
+        {
+            AnsiConsole.MarkupLine($"[dim]Reading spec from {specPath}...[/]");
+            projectContext = await File.ReadAllTextAsync(specPath);
+        }
+        else
+        {
+            // Treat as inline description
+            projectContext = initSpec;
+        }
+    }
+    else
+    {
+        // Prompt for spec
+        AnsiConsole.MarkupLine("[yellow]Enter your project specification.[/]");
+        AnsiConsole.MarkupLine("[dim]Describe what you want to build, or provide a path to a spec file.[/]\n");
+
+        projectContext = AnsiConsole.Prompt(
+            new TextPrompt<string>("[yellow]Project spec:[/]")
+                .AllowEmpty());
+
+        if (string.IsNullOrWhiteSpace(projectContext))
+        {
+            AnsiConsole.MarkupLine("[red]No specification provided. Exiting init mode.[/]");
+            return 1;
+        }
+
+        // Check if it's a file path
+        var specPath = Path.IsPathRooted(projectContext)
+            ? projectContext
+            : Path.Combine(targetDir, projectContext);
+
+        if (File.Exists(specPath))
+        {
+            AnsiConsole.MarkupLine($"[dim]Reading spec from {specPath}...[/]");
+            projectContext = await File.ReadAllTextAsync(specPath);
+        }
+    }
+
+    var initScaffolder = new ProjectScaffolder(config)
+    {
+        ProjectContext = projectContext,
+        ForceOverwrite = true
+    };
+
+    initScaffolder.OnScaffoldStart += file =>
+        AnsiConsole.MarkupLine($"[dim]Generating {file}...[/]");
+    initScaffolder.OnScaffoldComplete += (file, success) =>
+    {
+        if (success)
+            AnsiConsole.MarkupLine($"[green]Created {file}[/]");
+        else
+            AnsiConsole.MarkupLine($"[red]Failed to create {file}[/]");
+    };
+    initScaffolder.OnOutput += line =>
+        AnsiConsole.MarkupLine($"[dim]{Markup.Escape(line)}[/]");
+
+    AnsiConsole.MarkupLine("\n[blue]Regenerating project files...[/]");
+    await initScaffolder.ScaffoldAllAsync();
+
+    AnsiConsole.MarkupLine("\n[green]Project initialized![/]");
+}
+
 // Check project structure
 var scaffolder = new ProjectScaffolder(config);
 var structure = scaffolder.ValidateProject();
 
-if (!structure.IsComplete)
+if (!structure.IsComplete && !initMode)
 {
     AnsiConsole.MarkupLine("\n[yellow]Missing project files:[/]");
     foreach (var item in structure.MissingItems)

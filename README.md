@@ -19,10 +19,13 @@ RalphController automates the Ralph Wiggum technique:
 - **Rich TUI**: Spectre.Console-based interface with real-time streaming output, status, and controls
 - **Live Streaming**: See AI output as it's generated, not just after completion
 - **Project Scaffolding**: Generate all project files from a description or spec file
+- **Re-initialization**: Use `--init` to regenerate project files with new requirements
+- **Multi-Provider**: Supports Claude, Codex, and GitHub Copilot CLI
+- **Provider Persistence**: Remembers your provider choice per project in `.ralph.json`
+- **Global Tool**: Install as `ralph` command, run from any directory
 - **Pause/Resume/Stop**: Full control over the loop execution
 - **Hot-Reload**: Automatically detects changes to `prompt.md`
 - **Manual Injection**: Inject custom prompts mid-loop
-- **Multi-Provider**: Supports Claude CLI and OpenAI Codex
 - **Circuit Breaker**: Detects stagnation (3+ loops without progress) and stops
 - **Response Analyzer**: Detects completion signals and auto-exits when done
 - **Rate Limiting**: Configurable API calls/hour (default: 100)
@@ -60,22 +63,38 @@ dotnet run -- /path/to/existing-project
 
 ## Installation
 
+### As a Global Tool (Recommended)
+
+```bash
+# Install from local source
+dotnet pack
+dotnet tool install --global --add-source ./nupkg RalphController
+
+# Now use it from anywhere
+ralph                           # Run in current directory
+ralph /path/to/project          # Run in specified directory
+ralph --copilot                 # Use GitHub Copilot
+```
+
+### From Source
+
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/RalphController.git
+git clone https://github.com/clancey/RalphController.git
 cd RalphController
 
-# Build the project
+# Build and run
 dotnet build
-
-# Run
 dotnet run -- /path/to/your/project
 ```
 
 ## Requirements
 
 - .NET 8.0 SDK
-- Claude CLI (`claude`) or OpenAI Codex CLI (`codex`) installed and configured
+- At least one AI CLI installed and configured:
+  - Claude CLI (`claude`) - [Anthropic](https://docs.anthropic.com/claude/docs/claude-cli)
+  - Codex CLI (`codex`) - [OpenAI](https://github.com/openai/codex-cli)
+  - Copilot CLI (`copilot`) - [GitHub](https://github.com/github/copilot-cli)
 - Terminal with ANSI color support
 
 ## Usage
@@ -83,21 +102,59 @@ dotnet run -- /path/to/your/project
 ### Basic Usage
 
 ```bash
-# Run with interactive prompts
-dotnet run
+# Run in current directory (uses saved provider or prompts)
+ralph
 
 # Specify target directory
-dotnet run -- /path/to/project
-
-# Use Claude (default)
-dotnet run -- /path/to/project
-
-# Use Codex
-dotnet run -- /path/to/project --codex
+ralph /path/to/project
 
 # Use a specific provider
-dotnet run -- /path/to/project --provider codex
+ralph --claude              # Anthropic Claude
+ralph --codex               # OpenAI Codex
+ralph --copilot             # GitHub Copilot
+
+# Or use --provider flag
+ralph --provider copilot
 ```
+
+### Provider Persistence
+
+Ralph remembers your provider choice per project in `.ralph.json`:
+
+```bash
+# First time - prompts for provider, saves to .ralph.json
+ralph
+
+# Second time - automatically uses saved provider
+ralph
+# Output: Using saved provider from .ralph.json
+
+# Override with command line flag
+ralph --copilot             # Uses Copilot, updates .ralph.json
+```
+
+### Re-initialize with New Spec
+
+Use `--init` or `--spec` to regenerate all project files with new instructions:
+
+```bash
+# Provide spec inline
+ralph --init "Build a REST API for managing todo items with SQLite"
+
+# Provide spec from file
+ralph --init ./new-requirements.md
+
+# Interactive - prompts for spec
+ralph --init
+```
+
+This regenerates:
+- `prompt.md` - New iteration instructions
+- `implementation_plan.md` - New task breakdown with priorities
+- `agents.md` - New project context and build commands
+- `specs/` - New specification files
+
+Use this when pivoting direction or starting fresh with new requirements.
 
 ### Keyboard Controls
 

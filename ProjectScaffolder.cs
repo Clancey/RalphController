@@ -24,6 +24,12 @@ public class ProjectScaffolder
     /// </summary>
     public string? ProjectContext { get; set; }
 
+    /// <summary>
+    /// When true, overwrites existing files during scaffolding.
+    /// Used for re-initializing a project with a new spec.
+    /// </summary>
+    public bool ForceOverwrite { get; set; }
+
     public ProjectScaffolder(RalphConfig config)
     {
         _config = config;
@@ -44,7 +50,7 @@ public class ProjectScaffolder
     {
         var structure = ValidateProject();
 
-        if (structure.IsComplete)
+        if (structure.IsComplete && !ForceOverwrite)
         {
             return true;
         }
@@ -61,30 +67,39 @@ public class ProjectScaffolder
         }
 
         // Generate agents.md
-        if (!structure.HasAgentsMd)
+        if (!structure.HasAgentsMd || ForceOverwrite)
         {
             success &= await ScaffoldFileAsync("agents.md", ScaffoldPrompts.GetAgentsMdPrompt(context), cancellationToken);
         }
 
         // Generate specs files
-        if (!structure.HasSpecsDirectory || !Directory.EnumerateFiles(_config.SpecsDirectoryPath, "*.md").Any())
+        if (!structure.HasSpecsDirectory || !Directory.EnumerateFiles(_config.SpecsDirectoryPath, "*.md").Any() || ForceOverwrite)
         {
             success &= await ScaffoldFileAsync("specs/", ScaffoldPrompts.GetSpecsDirectoryPrompt(context), cancellationToken);
         }
 
         // Generate prompt.md
-        if (!structure.HasPromptMd)
+        if (!structure.HasPromptMd || ForceOverwrite)
         {
             success &= await ScaffoldFileAsync("prompt.md", ScaffoldPrompts.GetPromptMdPrompt(context), cancellationToken);
         }
 
         // Generate implementation_plan.md
-        if (!structure.HasImplementationPlan)
+        if (!structure.HasImplementationPlan || ForceOverwrite)
         {
             success &= await ScaffoldFileAsync("implementation_plan.md", ScaffoldPrompts.GetImplementationPlanPrompt(context), cancellationToken);
         }
 
         return success;
+    }
+
+    /// <summary>
+    /// Scaffold all project files using AI (overwrites existing files)
+    /// </summary>
+    public async Task<bool> ScaffoldAllAsync(CancellationToken cancellationToken = default)
+    {
+        ForceOverwrite = true;
+        return await ScaffoldMissingAsync(cancellationToken);
     }
 
     /// <summary>

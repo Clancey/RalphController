@@ -2,6 +2,8 @@
 
 A .NET console application that implements the "Ralph Wiggum" autonomous AI coding agent loop pattern. This tool monitors and controls Claude CLI (or OpenAI Codex) running in a continuous loop to autonomously implement features, fix bugs, and manage codebases.
 
+Point it at an empty directory with a project description, and watch it build your entire application from scratch. Or use it on an existing codebase to autonomously fix bugs and add features.
+
 ## Overview
 
 RalphController automates the Ralph Wiggum technique:
@@ -14,17 +16,47 @@ RalphController automates the Ralph Wiggum technique:
 
 ## Features
 
-- **Rich TUI**: Spectre.Console-based interface with live output, status, and controls
+- **Rich TUI**: Spectre.Console-based interface with real-time streaming output, status, and controls
+- **Live Streaming**: See AI output as it's generated, not just after completion
+- **Project Scaffolding**: Generate all project files from a description or spec file
 - **Pause/Resume/Stop**: Full control over the loop execution
 - **Hot-Reload**: Automatically detects changes to `prompt.md`
 - **Manual Injection**: Inject custom prompts mid-loop
 - **Multi-Provider**: Supports Claude CLI and OpenAI Codex
-- **Project Scaffolding**: Generates missing project files using AI
 - **Circuit Breaker**: Detects stagnation (3+ loops without progress) and stops
 - **Response Analyzer**: Detects completion signals and auto-exits when done
 - **Rate Limiting**: Configurable API calls/hour (default: 100)
 - **RALPH_STATUS**: Structured status reporting for progress tracking
 - **Priority Levels**: High/Medium/Low task prioritization
+
+## Quick Start
+
+### New Project (Empty Directory)
+
+RalphController can bootstrap an entire project from scratch. Just describe what you want to build:
+
+```bash
+# Point it at an empty directory
+dotnet run -- /path/to/new-project
+
+# When prompted for missing files, choose "Generate files using AI"
+# Then provide either:
+#   1. A description: "A REST API for task management with SQLite backend"
+#   2. A path to a spec file: "./specs/project-spec.md" or "~/Documents/my-idea.txt"
+```
+
+RalphController will use AI to generate:
+- `prompt.md` - Instructions for each loop iteration
+- `implementation_plan.md` - Task list with priorities
+- `agents.md` - Project context and learnings
+- `specs/` - Specification files based on your description
+
+### Existing Project
+
+```bash
+# Point at a project with Ralph files already set up
+dotnet run -- /path/to/existing-project
+```
 
 ## Installation
 
@@ -62,6 +94,9 @@ dotnet run -- /path/to/project
 
 # Use Codex
 dotnet run -- /path/to/project --codex
+
+# Use a specific provider
+dotnet run -- /path/to/project --provider codex
 ```
 
 ### Keyboard Controls
@@ -145,6 +180,47 @@ Tracks what's done, in progress, and pending:
 
 Directory containing specification markdown files that describe features to implement.
 
+## Project Scaffolding
+
+When you point RalphController at a directory missing required files, you'll be prompted with options:
+
+1. **Generate files using AI** - Provide a project description or spec file path
+2. **Create default template files** - Use generic templates
+3. **Continue anyway** - Skip scaffolding (requires at least `prompt.md`)
+4. **Exit** - Cancel
+
+### Using a Spec File
+
+For complex projects, write your requirements in a document first:
+
+```markdown
+# My Project Spec
+
+## Overview
+A command-line tool for managing personal finances...
+
+## Features
+- Import transactions from CSV
+- Categorize expenses automatically
+- Generate monthly reports
+- Export to PDF
+
+## Technical Requirements
+- .NET 8
+- SQLite for storage
+- Support Windows/Mac/Linux
+```
+
+Then provide the path when prompted:
+
+```bash
+dotnet run -- /path/to/empty-project
+# Choose "Generate files using AI"
+# Enter: /path/to/my-spec.md
+```
+
+The AI will read your spec and generate tailored project files with appropriate tasks, build commands, and specifications.
+
 ## How It Works
 
 1. **Startup**: Validates project structure, offers to scaffold missing files
@@ -209,6 +285,33 @@ EXIT_SIGNAL: true | false
 NEXT_STEP: <what to do next>
 ---END_STATUS---
 ```
+
+## Testing & Debug Modes
+
+RalphController includes several test modes for debugging:
+
+```bash
+# Test AI streaming output
+dotnet run -- --test-streaming
+
+# Run a single iteration without TUI
+dotnet run -- /path/to/project --single-run
+
+# Test AIProcess class directly
+dotnet run -- --test-aiprocess
+
+# Test process output capture
+dotnet run -- --test-output
+```
+
+## Streaming Output
+
+RalphController streams AI output in real-time:
+
+- **Claude**: Uses `--output-format stream-json` to parse streaming events
+- **Codex**: Native streaming via stdout
+
+Output is buffered line-by-line to prevent split words while maintaining real-time feedback.
 
 ## Contributing
 

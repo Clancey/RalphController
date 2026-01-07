@@ -20,6 +20,11 @@ RalphController automates the Ralph Wiggum technique:
 - **Manual Injection**: Inject custom prompts mid-loop
 - **Multi-Provider**: Supports Claude CLI and OpenAI Codex
 - **Project Scaffolding**: Generates missing project files using AI
+- **Circuit Breaker**: Detects stagnation (3+ loops without progress) and stops
+- **Response Analyzer**: Detects completion signals and auto-exits when done
+- **Rate Limiting**: Configurable API calls/hour (default: 100)
+- **RALPH_STATUS**: Structured status reporting for progress tracking
+- **Priority Levels**: High/Medium/Low task prioritization
 
 ## Installation
 
@@ -165,7 +170,45 @@ RalphController uses sensible defaults but can be customized:
 | Agents File | `agents.md` | AI learnings file |
 | Specs Directory | `specs/` | Specifications folder |
 | Iteration Delay | 1000ms | Delay between iterations |
-| Cost Per Hour | $5.00 | Estimated API cost/hour |
+| Cost Per Hour | $10.50 | Estimated API cost/hour |
+| Max Calls/Hour | 100 | Rate limit for API calls |
+| Circuit Breaker | Enabled | Detect and stop on stagnation |
+| Response Analyzer | Enabled | Detect completion signals |
+| Auto Exit | Enabled | Exit when completion detected |
+
+## Safety Features
+
+### Circuit Breaker
+Prevents runaway loops by detecting stagnation:
+- **No Progress**: Opens after 3+ loops without file changes
+- **Repeated Errors**: Opens after 5+ loops with same error
+- **States**: CLOSED (normal) → HALF_OPEN (monitoring) → OPEN (halted)
+
+### Rate Limiting
+Prevents API overuse:
+- Default: 100 calls per hour
+- Auto-waits when limit reached
+- Hourly reset window
+
+### Response Analyzer
+Detects when work is complete:
+- Parses `---RALPH_STATUS---` blocks from AI output
+- Tracks completion signals ("all tasks complete", "project done")
+- Detects test-only loops (stuck running tests without implementation)
+- Auto-exits when confidence is high
+
+### RALPH_STATUS Block
+The AI should end each response with:
+```
+---RALPH_STATUS---
+STATUS: IN_PROGRESS | COMPLETE | BLOCKED
+TASKS_COMPLETED: <number>
+FILES_MODIFIED: <number>
+TESTS_PASSED: true | false
+EXIT_SIGNAL: true | false
+NEXT_STEP: <what to do next>
+---END_STATUS---
+```
 
 ## Contributing
 

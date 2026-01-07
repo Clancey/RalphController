@@ -40,6 +40,18 @@ public record RalphConfig
     /// <summary>Delay between iterations in milliseconds</summary>
     public int IterationDelayMs { get; init; } = 1000;
 
+    /// <summary>Maximum API calls per hour (rate limiting)</summary>
+    public int MaxCallsPerHour { get; init; } = 100;
+
+    /// <summary>Enable circuit breaker to detect stagnation</summary>
+    public bool EnableCircuitBreaker { get; init; } = true;
+
+    /// <summary>Enable response analyzer for completion detection</summary>
+    public bool EnableResponseAnalyzer { get; init; } = true;
+
+    /// <summary>Auto-exit when completion signals detected</summary>
+    public bool AutoExitOnCompletion { get; init; } = true;
+
     /// <summary>Full path to prompt file</summary>
     public string PromptFilePath => Path.Combine(TargetDirectory, PromptFile);
 

@@ -216,7 +216,7 @@ public class ProjectScaffolder
         Study specs/* for requirements.
         Study implementation_plan.md for progress.
 
-        Choose the most important incomplete task.
+        Choose the most important incomplete task (High Priority first).
         Implement ONE thing.
         Run tests after changes.
         Update implementation_plan.md with progress.
@@ -229,26 +229,48 @@ public class ProjectScaffolder
         - Spawn multiple agents when tasks are independent
         - NEVER run builds/tests in parallel - one at a time only
         - Use agents liberally for reading, exploring, and generating
+
+        ## Status Reporting
+        End every response with:
+        ```
+        ---RALPH_STATUS---
+        STATUS: IN_PROGRESS | COMPLETE | BLOCKED
+        TASKS_COMPLETED: <number>
+        FILES_MODIFIED: <number>
+        TESTS_PASSED: true | false
+        EXIT_SIGNAL: true | false (true only when ALL work is done)
+        NEXT_STEP: <what to do next>
+        ---END_STATUS---
+        ```
         """;
 
     private static string GetDefaultImplementationPlan() => """
         # Implementation Plan
 
         ## Completed
-        - None yet
+        - [x] Project initialized
 
-        ## In Progress
-        - None
+        ## High Priority
+        - [ ] Set up project structure and build system
+        - [ ] Implement core data structures
+        - [ ] Create basic input/output handling
 
-        ## Pending
-        - [ ] Initial setup
-        - [ ] Define project structure
-        - [ ] Implement core features
+        ## Medium Priority
+        - [ ] Add error handling
+        - [ ] Implement main features
+        - [ ] Add configuration support
+        - [ ] Write user documentation
+
+        ## Low Priority
+        - [ ] Performance optimization
+        - [ ] Additional features
+        - [ ] Polish and refinements
 
         ## Bugs/Issues
         - None
 
         ## Notes
-        - Project initialized
+        - Focus on MVP first, then iterate
+        - Test each component before moving on
         """;
 }

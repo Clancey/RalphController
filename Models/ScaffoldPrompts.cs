@@ -96,6 +96,25 @@ public static class ScaffoldPrompts
         - "Wait for build/test results before spawning new build/test tasks"
         - "Use agents liberally for: reading docs, exploring code, generating boilerplate, writing tests"
 
+        CRITICAL - Status reporting requirement:
+        Every response MUST end with a RALPH_STATUS block in this exact format:
+        ```
+        ---RALPH_STATUS---
+        STATUS: IN_PROGRESS | COMPLETE | BLOCKED
+        TASKS_COMPLETED: <number>
+        FILES_MODIFIED: <number>
+        TESTS_PASSED: true | false
+        EXIT_SIGNAL: true | false
+        NEXT_STEP: <brief description of next action>
+        ---END_STATUS---
+        ```
+
+        EXIT_SIGNAL should be true ONLY when:
+        - All items in implementation_plan.md are complete
+        - All tests pass
+        - No errors exist
+        - Specifications are fully implemented
+
         Customize the prompt for this specific project type based on the context.
 
         Write the file to prompt.md
@@ -112,27 +131,46 @@ public static class ScaffoldPrompts
 
         Create an implementation_plan.md file - the TODO list for the project.
 
-        This file tracks:
-        - What has been completed [x]
-        - What is in progress [ ] <- CURRENT
-        - What is pending [ ]
-        - Bugs discovered during implementation
-        - Items that need investigation
+        This file tracks work across THREE priority levels:
+        - HIGH PRIORITY: Foundation work, blocking items, critical path
+        - MEDIUM PRIORITY: Core features, quality improvements, important functionality
+        - LOW PRIORITY: Nice-to-haves, optimizations, polish
+
+        Use this exact structure:
+
+        ```markdown
+        # Implementation Plan
+
+        ## Completed
+        - [x] Item description
+
+        ## High Priority
+        - [ ] Critical/blocking task
+        - [ ] Foundation work
+
+        ## Medium Priority
+        - [ ] Core feature
+        - [ ] Important functionality
+
+        ## Low Priority
+        - [ ] Nice-to-have
+        - [ ] Optimization
+
+        ## Bugs/Issues
+        - None
+
+        ## Notes
+        - Project learnings go here
+        ```
 
         The agent updates this file every iteration to:
-        - Mark completed items
+        - Mark completed items with [x]
+        - Move items between priority levels as needed
         - Add new items discovered during work
         - Note blockers or issues
 
-        Based on the project context, create an initial plan with:
-        1. A "Completed" section (empty or with any existing work)
-        2. A "In Progress" section (empty)
-        3. A "Pending" section with actual tasks derived from the project description
-        4. A "Bugs/Issues" section (empty)
-        5. A "Notes" section for learnings
-
+        Based on the project context, populate each priority section with real, actionable tasks.
         Keep items brief - one line each. This file is the agent's memory across iterations.
-        Make the pending tasks specific and actionable based on what you know about the project.
 
         Write the file to implementation_plan.md
         """;

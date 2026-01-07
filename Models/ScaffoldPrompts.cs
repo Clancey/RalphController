@@ -129,6 +129,9 @@ public static class ScaffoldPrompts
         PROJECT CONTEXT:
         {projectContext}
 
+        IMPORTANT: First, read the specs/* directory to understand what needs to be built.
+        The implementation plan MUST be derived from the current specs, not from assumptions.
+
         Create an implementation_plan.md file - the TODO list for the project.
 
         This file tracks work across THREE priority levels:
@@ -142,7 +145,7 @@ public static class ScaffoldPrompts
         # Implementation Plan
 
         ## Completed
-        - [x] Item description
+        - [x] Project initialized
 
         ## High Priority
         - [ ] Critical/blocking task
@@ -163,13 +166,19 @@ public static class ScaffoldPrompts
         - Project learnings go here
         ```
 
+        CRITICAL INSTRUCTIONS:
+        1. Read specs/* to understand all requirements
+        2. Create tasks that map to spec requirements
+        3. Start fresh - do NOT preserve old completed items
+        4. The Completed section should only contain "Project initialized"
+        5. All spec requirements should appear as incomplete tasks in the appropriate priority
+
         The agent updates this file every iteration to:
         - Mark completed items with [x]
         - Move items between priority levels as needed
         - Add new items discovered during work
         - Note blockers or issues
 
-        Based on the project context, populate each priority section with real, actionable tasks.
         Keep items brief - one line each. This file is the agent's memory across iterations.
 
         Write the file to implementation_plan.md

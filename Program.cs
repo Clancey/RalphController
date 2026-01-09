@@ -10,7 +10,47 @@ static string? NormalizeOpenCodeModel(string? model)
         return null;
     }
 
-    return model.Contains('/') ? model : $"ollama/{model}";
+    // If it already has provider, use as is
+    if (model.Contains('/'))
+    {
+        return model;
+    }
+
+    // For local models, assume ollama provider
+    return $"ollama/{model}";
+}
+
+static async Task<List<string>> GetOpenCodeModels()
+{
+    var psi = new ProcessStartInfo
+    {
+        FileName = "/bin/bash",
+        Arguments = "-c \"opencode models\"",
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+    };
+
+    using var process = new Process { StartInfo = psi };
+    process.Start();
+    var output = await process.StandardOutput.ReadToEndAsync();
+    var error = await process.StandardError.ReadToEndAsync();
+    await process.WaitForExitAsync();
+
+    if (process.ExitCode == 0)
+    {
+        var models = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                           .Select(m => m.Trim())
+                           .Where(m => !string.IsNullOrEmpty(m))
+                           .ToList();
+        // Sort alphabetically
+        models.Sort();
+        return models;
+    }
+
+    // Fallback defaults
+    return new List<string> { "ollama/llama3.1:70b", "lmstudio/qwen/qwen3-coder-30b" };
 }
 
 // Check for test modes
@@ -99,8 +139,8 @@ if (args.Contains("--test-aiprocess"))
     var testConfig = new RalphConfig
     {
         TargetDirectory = Directory.GetCurrentDirectory(),
-        Provider = AIProvider.Claude,
-        ProviderConfig = AIProviderConfig.ForClaude()
+        Provider = AIProvider.OpenCode,
+        ProviderConfig = AIProviderConfig.ForOpenCode(model: "lmstudio/qwen/qwen3-coder-30b")
     };
 
     using var aiProcess = new AIProcess(testConfig);
@@ -234,6 +274,8 @@ var initMode = false;
 string? modelFromArgs = null;
 
 // Check for flags
+var listModels = false;
+var freshMode = false;
 for (int i = 0; i < args.Length; i++)
 {
     if (args[i] == "--provider" && i + 1 < args.Length)
@@ -268,6 +310,14 @@ for (int i = 0; i < args.Length; i++)
     {
         providerFromArgs = AIProvider.OpenCode;
     }
+    else if (args[i] == "--list-models")
+    {
+        listModels = true;
+    }
+    else if (args[i] == "--fresh")
+    {
+        freshMode = true;
+    }
     else if (args[i] == "--init" || args[i] == "--spec")
     {
         initMode = true;
@@ -278,6 +328,38 @@ for (int i = 0; i < args.Length; i++)
             i++; // Skip the spec value in next iteration
         }
     }
+}
+
+if (listModels)
+{
+    AnsiConsole.MarkupLine("[yellow]Listing available models...[/]");
+
+    var psi = new ProcessStartInfo
+    {
+        FileName = "/bin/bash",
+        Arguments = "-c \"opencode models\"",
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+    };
+
+    using var process = new Process { StartInfo = psi };
+    process.Start();
+    var output = await process.StandardOutput.ReadToEndAsync();
+    var error = await process.StandardError.ReadToEndAsync();
+    await process.WaitForExitAsync();
+
+    if (process.ExitCode == 0)
+    {
+        AnsiConsole.MarkupLine("[green]Available models:[/]");
+        AnsiConsole.WriteLine(output);
+    }
+    else
+    {
+        AnsiConsole.MarkupLine($"[red]Error listing models: {error}[/]");
+    }
+    return 0;
 }
 
 // Show banner
@@ -335,7 +417,7 @@ AnsiConsole.MarkupLine($"[green]Target directory:[/] {targetDir}");
 
 // Load project settings
 var projectSettings = ProjectSettings.Load(targetDir);
-var savedProvider = projectSettings.Provider;
+var savedProvider = freshMode ? null : projectSettings.Provider;
 
 // Determine provider: command line > saved > prompt
 AIProvider provider;
@@ -374,7 +456,7 @@ if (provider == AIProvider.Copilot)
         copilotModel = modelFromArgs;
         projectSettings.CopilotModel = copilotModel;
     }
-    else if (!string.IsNullOrEmpty(projectSettings.CopilotModel))
+    else if (!freshMode && !string.IsNullOrEmpty(projectSettings.CopilotModel))
     {
         // Use saved model
         copilotModel = projectSettings.CopilotModel;
@@ -413,7 +495,7 @@ if (provider == AIProvider.OpenCode)
         openCodeModel = NormalizeOpenCodeModel(modelFromArgs);
         projectSettings.OpenCodeModel = openCodeModel;
     }
-    else if (!string.IsNullOrEmpty(projectSettings.OpenCodeModel))
+    else if (!freshMode && !string.IsNullOrEmpty(projectSettings.OpenCodeModel))
     {
         // Use saved model
         openCodeModel = NormalizeOpenCodeModel(projectSettings.OpenCodeModel);
@@ -425,10 +507,22 @@ if (provider == AIProvider.OpenCode)
     }
     else
     {
-        // Prompt for model (provider/model), allow default
+        // Get available models
+        var models = await GetOpenCodeModels();
+
+        // Prompt for model selection
+        var allChoices = models.Concat(new[] { "Enter custom model..." }).ToList();
         var modelInput = AnsiConsole.Prompt(
-            new TextPrompt<string>("[yellow]Enter OpenCode model (provider/model) or leave blank for default:[/]")
-                .AllowEmpty());
+            new SelectionPrompt<string>()
+                .Title("[yellow]Select OpenCode model:[/]")
+                .AddChoices(allChoices));
+
+        if (modelInput == "Enter custom model...")
+        {
+            modelInput = AnsiConsole.Prompt(
+                new TextPrompt<string>("[yellow]Enter custom model (provider/model):[/]")
+                    .AllowEmpty());
+        }
 
         openCodeModel = NormalizeOpenCodeModel(modelInput);
         if (!string.IsNullOrEmpty(openCodeModel))
@@ -440,6 +534,7 @@ if (provider == AIProvider.OpenCode)
     var modelLabel = string.IsNullOrEmpty(openCodeModel) ? "(default)" : openCodeModel;
     AnsiConsole.MarkupLine($"[green]Model:[/] {modelLabel}");
 }
+
 
 // Save provider to project settings if it changed or was newly selected
 if (providerWasSelected || (providerFromArgs.HasValue && providerFromArgs != savedProvider))

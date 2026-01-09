@@ -92,10 +92,10 @@ public class AIProcess : IDisposable
             await File.WriteAllTextAsync(tempFile, prompt, cancellationToken);
             _tempPromptFile = tempFile;
 
-            // Create a temp script file to avoid quoting issues
-            scriptFile = Path.GetTempFileName() + ".sh";
-            var scriptContent = $"#!/bin/bash\n{_providerConfig.ExecutablePath} {arguments} \"$(cat '{tempFile}')\"";
-            await File.WriteAllTextAsync(scriptFile, scriptContent, cancellationToken);
+    // Create a temp script file to avoid quoting issues
+    scriptFile = Path.GetTempFileName() + ".sh";
+    var scriptContent = $"#!/bin/bash\n{_providerConfig.ExecutablePath} {arguments} \"$(cat '{tempFile}')\"";
+    await File.WriteAllTextAsync(scriptFile, scriptContent, cancellationToken);
 
             arguments = scriptFile;
             useShell = true;
@@ -125,6 +125,12 @@ public class AIProcess : IDisposable
             CreateNoWindow = true
         };
 
+        if (_providerConfig.Provider == AIProvider.OpenCode)
+        {
+            psi.Environment["OPENCODE_DISABLE_AUTOUPDATE"] = "true";
+            psi.Environment["OPENCODE_PERMISSION"] = "{\"permission\":\"allow\"}";
+        }
+
         try
         {
             _process = new Process { StartInfo = psi };
@@ -138,38 +144,51 @@ public class AIProcess : IDisposable
                         // Parse stream-json format to extract text content
                         var text = ParseStreamJsonLine(e.Data);
                         if (text != null)
+                    {
+                        lock (_lock)
                         {
-                            lock (_lock)
+                            _streamingTextBuffer.Append(text);
+                            _outputBuffer.Append(text);
+                            _lineBuffer.Append(text);
+
+                            // Emit complete lines as they become available
+                            var content = _lineBuffer.ToString();
+                            var lastNewline = content.LastIndexOf('\n');
+                            if (lastNewline >= 0)
                             {
-                                _streamingTextBuffer.Append(text);
-                                _outputBuffer.Append(text);
-                                _lineBuffer.Append(text);
+                                // Extract and emit complete lines
+                                var completeLines = content.Substring(0, lastNewline + 1);
+                                _lineBuffer.Clear();
+                                _lineBuffer.Append(content.Substring(lastNewline + 1));
 
-                                // Emit complete lines as they become available
-                                var content = _lineBuffer.ToString();
-                                var lastNewline = content.LastIndexOf('\n');
-                                if (lastNewline >= 0)
+                                // Emit each complete line
+                                foreach (var line in completeLines.Split('\n', StringSplitOptions.None))
                                 {
-                                    // Extract and emit complete lines
-                                    var completeLines = content.Substring(0, lastNewline + 1);
-                                    _lineBuffer.Clear();
-                                    _lineBuffer.Append(content.Substring(lastNewline + 1));
-
-                                    // Emit each complete line
-                                    foreach (var line in completeLines.Split('\n', StringSplitOptions.None))
-                                    {
-                                        if (!string.IsNullOrEmpty(line))
-                                            OnOutput?.Invoke(line);
-                                    }
+                                    if (!string.IsNullOrEmpty(line))
+                                        OnOutput?.Invoke(line);
                                 }
                             }
                         }
                     }
-                    else
+                }
+                else if (_providerConfig.Provider == AIProvider.OpenCode)
+                {
+                    // Parse OpenCode JSON format
+                    var text = ParseOpenCodeJsonLine(e.Data);
+                    if (text != null)
                     {
-                        lock (_lock) _outputBuffer.AppendLine(e.Data);
-                        OnOutput?.Invoke(e.Data);
+                        lock (_lock)
+                        {
+                            _outputBuffer.Append(text);
+                            OnOutput?.Invoke(text);
+                        }
                     }
+                }
+                else
+                {
+                    lock (_lock) _outputBuffer.AppendLine(e.Data);
+                    OnOutput?.Invoke(e.Data);
+                }
                 }
             };
 
@@ -258,6 +277,83 @@ public class AIProcess : IDisposable
                 }
             }
 
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Parse a line of OpenCode JSON output to extract text content
+    /// </summary>
+    private static string? ParseOpenCodeJsonLine(string line)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("{"))
+                return null;
+
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("type", out var typeEl))
+            {
+                var type = typeEl.GetString();
+                if (type == "text" || type == "text_delta" || type == "content_block_delta")
+                {
+                    // Check if text is directly on root
+                    if (root.TryGetProperty("text", out var textEl))
+                    {
+                        return textEl.GetString();
+                    }
+                    // Check in part.text
+                    if (root.TryGetProperty("part", out var partEl) && partEl.TryGetProperty("text", out textEl))
+                    {
+                        return textEl.GetString();
+                    }
+                    // Other formats
+                    if (root.TryGetProperty("content", out textEl))
+                    {
+                        return textEl.GetString();
+                    }
+                    if (root.TryGetProperty("delta", out var deltaEl))
+                    {
+                        if (deltaEl.TryGetProperty("text", out textEl))
+                        {
+                            return textEl.GetString();
+                        }
+                    }
+                }
+                else if (type == "error")
+                {
+                    string? errorMsg = null;
+                    if (root.TryGetProperty("error", out var errorEl))
+                    {
+                        if (errorEl.TryGetProperty("message", out var msgEl))
+                        {
+                            errorMsg = msgEl.GetString();
+                        }
+                        else if (errorEl.TryGetProperty("data", out var dataEl) &&
+                                 dataEl.TryGetProperty("message", out var dataMsgEl))
+                        {
+                            errorMsg = dataMsgEl.GetString();
+                        }
+                    }
+                    else if (root.TryGetProperty("part", out var partEl) && partEl.TryGetProperty("error", out errorEl))
+                    {
+                        if (errorEl.TryGetProperty("message", out var msgEl))
+                        {
+                            errorMsg = msgEl.GetString();
+                        }
+                    }
+                    if (errorMsg != null)
+                    {
+                        return $"Error: {errorMsg}";
+                    }
+                }
+            }
             return null;
         }
         catch

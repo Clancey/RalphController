@@ -141,6 +141,8 @@ public class ProjectScaffolder
         }
     }
 
+
+
     /// <summary>
     /// Create default files without AI (minimal templates)
     /// </summary>

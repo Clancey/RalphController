@@ -78,7 +78,9 @@ public record AIProviderConfig
     {
         Provider = AIProvider.OpenCode,
         ExecutablePath = executablePath ?? "opencode",
-        Arguments = string.IsNullOrWhiteSpace(model) ? "run" : $"run --model {model}",
+        Arguments = string.IsNullOrWhiteSpace(model)
+            ? "run --format json"
+            : $"run --format json --model {model}",
         UsesStdin = false,
         UsesPromptArgument = true
     };

@@ -140,6 +140,16 @@ ralph --copilot --model gpt-5.1
 # Specify a model for OpenCode (provider/model)
 ralph --opencode --model anthropic/claude-3-5-sonnet
 ralph --opencode --model ollama/llama3.1:70b
+ralph --opencode --model lmstudio/qwen/qwen3-coder-30b
+
+# Or let it prompt with a list of available models
+ralph --opencode
+
+# List available models for OpenCode
+ralph --list-models
+
+# Ignore saved settings from .ralph.json
+ralph --fresh
 
 ```
 
@@ -157,6 +167,12 @@ ralph
 
 # Override with command line flag
 ralph --copilot             # Uses Copilot, updates .ralph.json
+
+# Ignore saved settings
+ralph --fresh               # Prompts for provider even if saved
+
+# For OpenCode, when prompted for model, it shows a selectable list of available models
+ralph --opencode            # Shows model selection menu
 ```
 
 ### Re-initialize with New Spec

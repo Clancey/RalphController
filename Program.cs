@@ -3,6 +3,16 @@ using RalphController;
 using RalphController.Models;
 using Spectre.Console;
 
+static string? NormalizeOpenCodeModel(string? model)
+{
+    if (string.IsNullOrWhiteSpace(model))
+    {
+        return null;
+    }
+
+    return model.Contains('/') ? model : $"ollama/{model}";
+}
+
 // Check for test modes
 if (args.Contains("--test-streaming"))
 {
@@ -400,13 +410,17 @@ if (provider == AIProvider.OpenCode)
     if (!string.IsNullOrEmpty(modelFromArgs))
     {
         // Use command line argument
-        openCodeModel = modelFromArgs;
+        openCodeModel = NormalizeOpenCodeModel(modelFromArgs);
         projectSettings.OpenCodeModel = openCodeModel;
     }
     else if (!string.IsNullOrEmpty(projectSettings.OpenCodeModel))
     {
         // Use saved model
-        openCodeModel = projectSettings.OpenCodeModel;
+        openCodeModel = NormalizeOpenCodeModel(projectSettings.OpenCodeModel);
+        if (openCodeModel != projectSettings.OpenCodeModel)
+        {
+            projectSettings.OpenCodeModel = openCodeModel;
+        }
         AnsiConsole.MarkupLine($"[dim]Using saved model: {openCodeModel}[/]");
     }
     else
@@ -416,7 +430,7 @@ if (provider == AIProvider.OpenCode)
             new TextPrompt<string>("[yellow]Enter OpenCode model (provider/model) or leave blank for default:[/]")
                 .AllowEmpty());
 
-        openCodeModel = string.IsNullOrWhiteSpace(modelInput) ? null : modelInput;
+        openCodeModel = NormalizeOpenCodeModel(modelInput);
         if (!string.IsNullOrEmpty(openCodeModel))
         {
             projectSettings.OpenCodeModel = openCodeModel;

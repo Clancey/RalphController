@@ -139,6 +139,7 @@ ralph --copilot --model gpt-5.1
 
 # Specify a model for OpenCode (provider/model)
 ralph --opencode --model anthropic/claude-3-5-sonnet
+ralph --opencode --model ollama/llama3.1:70b
 
 ```
 

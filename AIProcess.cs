@@ -93,8 +93,9 @@ public class AIProcess : IDisposable
             _tempPromptFile = tempFile;
 
     // Create a temp script file to avoid quoting issues
+    // Close stdin to prevent tools like opencode from hanging waiting for input
     scriptFile = Path.GetTempFileName() + ".sh";
-    var scriptContent = $"#!/bin/bash\n{_providerConfig.ExecutablePath} {arguments} \"$(cat '{tempFile}')\"";
+    var scriptContent = $"#!/bin/bash\nexec < /dev/null\n{_providerConfig.ExecutablePath} {arguments} \"$(cat '{tempFile}')\"";
     await File.WriteAllTextAsync(scriptFile, scriptContent, cancellationToken);
 
             arguments = scriptFile;

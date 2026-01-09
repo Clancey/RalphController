@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using RalphController.Models;
 using Spectre.Console;
 
@@ -13,6 +14,8 @@ public class ConsoleUI : IDisposable
     private readonly FileWatcher _fileWatcher;
     private readonly RalphConfig _config;
     private readonly ConcurrentQueue<string> _outputLines = new();
+    private readonly StringBuilder _streamBuffer = new();
+    private readonly object _bufferLock = new();
     private readonly int _maxOutputLines = 30;
     private CancellationTokenSource? _uiCts;
     private Task? _inputTask;
@@ -32,11 +35,13 @@ public class ConsoleUI : IDisposable
         _config = config;
 
         // Subscribe to controller events - ANSI codes will be converted to Spectre markup
-        _controller.OnOutput += line => AddOutputLine(line, isRawOutput: true);
+        // Buffer streaming output and emit complete lines
+        _controller.OnOutput += text => AddStreamingOutput(text);
         _controller.OnError += line => AddOutputLine(line, isRawOutput: true, isError: true);
         _controller.OnIterationStart += iter => AddOutputLine($"[blue]>>> Starting iteration {iter}[/]");
         _controller.OnIterationComplete += (iter, result) =>
         {
+            FlushStreamBuffer(); // Flush any remaining buffered output
             var status = result.Success ? "[green]SUCCESS[/]" : "[red]FAILED[/]";
             AddOutputLine($"[blue]<<< Iteration {iter} complete: {status}[/]");
         };
@@ -343,6 +348,60 @@ public class ConsoleUI : IDisposable
         while (_outputLines.Count > _maxOutputLines)
         {
             _outputLines.TryDequeue(out _);
+        }
+    }
+
+    private void AddStreamingOutput(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        lock (_bufferLock)
+        {
+            _streamBuffer.Append(text);
+
+            // Process complete lines
+            var content = _streamBuffer.ToString();
+            var lastNewline = content.LastIndexOf('\n');
+
+            if (lastNewline >= 0)
+            {
+                // Extract complete lines
+                var completeLines = content.Substring(0, lastNewline);
+                var remainder = content.Substring(lastNewline + 1);
+
+                // Clear buffer and keep remainder
+                _streamBuffer.Clear();
+                _streamBuffer.Append(remainder);
+
+                // Add each complete line
+                foreach (var line in completeLines.Split('\n'))
+                {
+                    AddOutputLine(line, isRawOutput: true);
+                }
+            }
+            else if (_streamBuffer.Length > 200)
+            {
+                // Buffer getting large without newlines - flush as partial line
+                var partial = _streamBuffer.ToString();
+                _streamBuffer.Clear();
+                AddOutputLine(partial, isRawOutput: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Flush any remaining buffered streaming content
+    /// </summary>
+    public void FlushStreamBuffer()
+    {
+        lock (_bufferLock)
+        {
+            if (_streamBuffer.Length > 0)
+            {
+                AddOutputLine(_streamBuffer.ToString(), isRawOutput: true);
+                _streamBuffer.Clear();
+            }
         }
     }
 

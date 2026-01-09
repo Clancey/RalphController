@@ -20,6 +20,12 @@ public class ProjectSettings
     /// <summary>Model to use for OpenCode (e.g., anthropic/claude-3-5-sonnet)</summary>
     public string? OpenCodeModel { get; set; }
 
+    /// <summary>Base URL for Ollama/LMStudio API (e.g., http://127.0.0.1:11434)</summary>
+    public string? OllamaUrl { get; set; }
+
+    /// <summary>Model to use for Ollama/LMStudio (e.g., llama3.1:8b)</summary>
+    public string? OllamaModel { get; set; }
+
     /// <summary>Custom executable path for the provider (optional)</summary>
     public string? ExecutablePath { get; set; }
 

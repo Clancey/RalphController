@@ -412,6 +412,101 @@ RalphController streams AI output in real-time:
 
 Output is buffered line-by-line to prevent split words while maintaining real-time feedback.
 
+## Configuring Ollama Models for OpenCode
+
+When using Ralph with OpenCode and local Ollama models, you may encounter issues where the AI responds with text but doesn't actually execute tools. This is because Ollama models default to a 4096 token context window, which is too small for OpenCode's system prompt and tool definitions.
+
+### The Problem
+
+Ollama models have a default context window of 4096 tokens. OpenCode requires a larger context to properly include:
+- System prompts
+- Tool definitions (bash, read, write, edit, etc.)
+- Conversation history
+
+When the context is too small, the model receives truncated tool definitions and falls back to outputting tool calls as text rather than using native function calling.
+
+### Solution: Create a Model with Larger Context
+
+**Step 1: Run the model interactively**
+
+```bash
+# SSH to your Ollama server or run locally
+ollama run qwen3-coder:30b
+```
+
+**Step 2: Increase the context window**
+
+In the Ollama interactive prompt:
+```
+>>> /set parameter num_ctx 32768
+```
+
+**Step 3: Save as a new model**
+
+```
+>>> /save qwen3-coder:30b-32k
+>>> /bye
+```
+
+**Step 4: Configure OpenCode**
+
+Add the new model to `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://localhost:11434/v1"
+      },
+      "models": {
+        "qwen3-coder:30b-32k": {
+          "name": "qwen3-coder:30b-32k",
+          "tools": true,
+          "supportsToolChoice": true
+        }
+      }
+    }
+  }
+}
+```
+
+**Step 5: Use with Ralph**
+
+```bash
+ralph --opencode --model ollama/qwen3-coder:30b-32k
+```
+
+### Recommended Context Sizes
+
+| Model Size | Recommended `num_ctx` |
+|------------|----------------------|
+| 7B-8B      | 16384                |
+| 13B-30B    | 32768                |
+| 70B+       | 32768-65536          |
+
+> **Note**: Larger context windows require more VRAM. Adjust based on your hardware capabilities.
+
+### Troubleshooting
+
+If tool calling still doesn't work:
+
+1. **Verify the model supports tools**: Not all models support native function calling. Check Ollama's model page for a "tools" tag.
+
+2. **Check OpenCode logs**: Run with `--print-logs --log-level DEBUG` to see what's being sent to the API.
+
+3. **Test the API directly**: Verify Ollama returns proper `tool_calls`:
+   ```bash
+   curl http://localhost:11434/v1/chat/completions -d '{
+     "model": "qwen3-coder:30b-32k",
+     "messages": [{"role": "user", "content": "hi"}],
+     "tools": [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+   }'
+   ```
+
+For more details, see the [OpenCode Ollama setup guide](https://github.com/p-lemonish/ollama-x-opencode).
+
 ## Contributing
 
 Contributions welcome! Please read the contributing guidelines first.

@@ -15,7 +15,10 @@ public enum AIProvider
     Copilot,
 
     /// <summary>OpenCode CLI</summary>
-    OpenCode
+    OpenCode,
+
+    /// <summary>Direct Ollama API integration</summary>
+    Ollama
 }
 
 /// <summary>
@@ -83,5 +86,14 @@ public record AIProviderConfig
             : $"run --format json --model {model}",
         UsesStdin = false,
         UsesPromptArgument = true
+    };
+
+    public static AIProviderConfig ForOllama(string? baseUrl = null, string? model = null) => new()
+    {
+        Provider = AIProvider.Ollama,
+        ExecutablePath = baseUrl ?? "http://localhost:11434",  // Use ExecutablePath to store base URL
+        Arguments = model ?? "llama3.1:8b",  // Use Arguments to store model name
+        UsesStdin = false,
+        UsesPromptArgument = false
     };
 }

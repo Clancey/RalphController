@@ -53,6 +53,39 @@ static async Task<List<string>> GetOpenCodeModels()
     return new List<string> { "ollama/llama3.1:70b", "lmstudio/qwen/qwen3-coder-30b" };
 }
 
+static async Task<List<string>> GetOllamaModels(string baseUrl)
+{
+    try
+    {
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        var response = await client.GetStringAsync($"{baseUrl.TrimEnd('/')}/api/tags");
+
+        // Parse JSON response: {"models":[{"name":"llama3.1:8b",...},...]
+        using var doc = System.Text.Json.JsonDocument.Parse(response);
+        var models = new List<string>();
+
+        if (doc.RootElement.TryGetProperty("models", out var modelsArray))
+        {
+            foreach (var model in modelsArray.EnumerateArray())
+            {
+                if (model.TryGetProperty("name", out var nameElement))
+                {
+                    models.Add(nameElement.GetString() ?? "");
+                }
+            }
+        }
+
+        // Sort by name
+        models.Sort();
+        return models;
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[dim]Could not fetch models from server: {ex.Message}[/]");
+        return new List<string>();
+    }
+}
+
 // Check for test modes
 if (args.Contains("--test-streaming"))
 {
@@ -272,10 +305,12 @@ string? initSpec = null;
 var initMode = false;
 
 string? modelFromArgs = null;
+string? apiUrlFromArgs = null;
 
 // Check for flags
 var listModels = false;
 var freshMode = false;
+var noTui = false;
 for (int i = 0; i < args.Length; i++)
 {
     if (args[i] == "--provider" && i + 1 < args.Length)
@@ -286,12 +321,18 @@ for (int i = 0; i < args.Length; i++)
             "claude" => AIProvider.Claude,
             "copilot" => AIProvider.Copilot,
             "opencode" => AIProvider.OpenCode,
+            "ollama" => AIProvider.Ollama,
             _ => null
         };
     }
     else if (args[i] == "--model" && i + 1 < args.Length)
     {
         modelFromArgs = args[i + 1];
+        i++;
+    }
+    else if ((args[i] == "--api-url" || args[i] == "--url") && i + 1 < args.Length)
+    {
+        apiUrlFromArgs = args[i + 1];
         i++;
     }
     else if (args[i] == "--codex")
@@ -310,6 +351,16 @@ for (int i = 0; i < args.Length; i++)
     {
         providerFromArgs = AIProvider.OpenCode;
     }
+    else if (args[i] == "--ollama")
+    {
+        providerFromArgs = AIProvider.Ollama;
+        // URL will be prompted or loaded from saved settings
+    }
+    else if (args[i] == "--lmstudio")
+    {
+        providerFromArgs = AIProvider.Ollama; // LMStudio uses same API
+        // URL will be prompted or loaded from saved settings
+    }
     else if (args[i] == "--list-models")
     {
         listModels = true;
@@ -327,6 +378,10 @@ for (int i = 0; i < args.Length; i++)
             initSpec = args[i + 1];
             i++; // Skip the spec value in next iteration
         }
+    }
+    else if (args[i] == "--no-tui" || args[i] == "--console")
+    {
+        noTui = true;
     }
 }
 
@@ -440,7 +495,7 @@ else
     provider = AnsiConsole.Prompt(
         new SelectionPrompt<AIProvider>()
             .Title("[yellow]Select AI provider:[/]")
-            .AddChoices(AIProvider.Claude, AIProvider.Codex, AIProvider.Copilot, AIProvider.OpenCode));
+            .AddChoices(AIProvider.Claude, AIProvider.Codex, AIProvider.Copilot, AIProvider.OpenCode, AIProvider.Ollama));
     providerWasSelected = true;
 }
 
@@ -535,6 +590,95 @@ if (provider == AIProvider.OpenCode)
     AnsiConsole.MarkupLine($"[green]Model:[/] {modelLabel}");
 }
 
+// For Ollama/LMStudio, handle URL and model selection
+string? ollamaUrl = null;
+string? ollamaModel = null;
+if (provider == AIProvider.Ollama)
+{
+    // Handle URL
+    if (!string.IsNullOrEmpty(apiUrlFromArgs))
+    {
+        ollamaUrl = apiUrlFromArgs;
+        projectSettings.OllamaUrl = ollamaUrl;
+    }
+    else if (!freshMode && !string.IsNullOrEmpty(projectSettings.OllamaUrl))
+    {
+        ollamaUrl = projectSettings.OllamaUrl;
+        AnsiConsole.MarkupLine($"[dim]Using saved API URL: {ollamaUrl}[/]");
+    }
+    else
+    {
+        // Prompt for URL
+        ollamaUrl = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("[yellow]Select API endpoint:[/]")
+                .AddChoices(
+                    "http://localhost:11434 (Ollama local)",
+                    "http://127.0.0.1:1234 (LMStudio)",
+                    "Enter custom URL..."));
+
+        if (ollamaUrl == "Enter custom URL...")
+        {
+            ollamaUrl = AnsiConsole.Prompt(
+                new TextPrompt<string>("[yellow]Enter API URL:[/]")
+                    .DefaultValue("http://localhost:11434"));
+        }
+        else
+        {
+            // Extract just the URL part
+            ollamaUrl = ollamaUrl.Split(' ')[0];
+        }
+        projectSettings.OllamaUrl = ollamaUrl;
+    }
+
+    AnsiConsole.MarkupLine($"[green]API URL:[/] {ollamaUrl}");
+
+    // Handle model
+    if (!string.IsNullOrEmpty(modelFromArgs))
+    {
+        ollamaModel = modelFromArgs;
+        projectSettings.OllamaModel = ollamaModel;
+    }
+    else if (!freshMode && !string.IsNullOrEmpty(projectSettings.OllamaModel))
+    {
+        ollamaModel = projectSettings.OllamaModel;
+        AnsiConsole.MarkupLine($"[dim]Using saved model: {ollamaModel}[/]");
+    }
+    else
+    {
+        // Query server for available models
+        var availableModels = await GetOllamaModels(ollamaUrl!);
+
+        if (availableModels.Count > 0)
+        {
+            // Add custom option at the end
+            availableModels.Add("Enter custom model...");
+
+            ollamaModel = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title($"[yellow]Select model ({availableModels.Count - 1} available):[/]")
+                    .PageSize(15)
+                    .AddChoices(availableModels));
+
+            if (ollamaModel == "Enter custom model...")
+            {
+                ollamaModel = AnsiConsole.Prompt(
+                    new TextPrompt<string>("[yellow]Enter model name:[/]")
+                        .DefaultValue("llama3.1:8b"));
+            }
+        }
+        else
+        {
+            // Fallback to manual entry if server query failed
+            ollamaModel = AnsiConsole.Prompt(
+                new TextPrompt<string>("[yellow]Enter model name:[/]")
+                    .DefaultValue("llama3.1:8b"));
+        }
+        projectSettings.OllamaModel = ollamaModel;
+    }
+
+    AnsiConsole.MarkupLine($"[green]Model:[/] {ollamaModel}");
+}
 
 // Save provider to project settings if it changed or was newly selected
 if (providerWasSelected || (providerFromArgs.HasValue && providerFromArgs != savedProvider))
@@ -549,6 +693,7 @@ var providerConfig = provider switch
     AIProvider.Codex => AIProviderConfig.ForCodex(),
     AIProvider.Copilot => AIProviderConfig.ForCopilot(model: copilotModel),
     AIProvider.OpenCode => AIProviderConfig.ForOpenCode(model: openCodeModel),
+    AIProvider.Ollama => AIProviderConfig.ForOllama(baseUrl: ollamaUrl, model: ollamaModel),
     _ => AIProviderConfig.ForClaude()
 };
 
@@ -648,14 +793,17 @@ if (!structure.IsComplete && !initMode)
         AnsiConsole.MarkupLine($"  [red]- {item}[/]");
     }
 
-    var action = AnsiConsole.Prompt(
-        new SelectionPrompt<string>()
-            .Title("\n[yellow]What would you like to do?[/]")
-            .AddChoices(
-                "Generate files using AI",
-                "Create default template files",
-                "Continue anyway",
-                "Exit"));
+    // In no-TUI mode, skip interactive prompts and continue anyway
+    var action = noTui
+        ? "Continue anyway"
+        : AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("\n[yellow]What would you like to do?[/]")
+                .AddChoices(
+                    "Generate files using AI",
+                    "Create default template files",
+                    "Continue anyway",
+                    "Exit"));
 
     switch (action)
     {
@@ -722,6 +870,114 @@ if (!structure.HasPromptMd)
 {
     AnsiConsole.MarkupLine("[red]Error: prompt.md is required to run the loop[/]");
     return 1;
+}
+
+// No-TUI mode - run loop with plain console output
+if (noTui)
+{
+    AnsiConsole.MarkupLine("[yellow]Running in console mode (no TUI)...[/]\n");
+
+    // For Ollama provider, use OllamaClient directly for proper streaming
+    if (provider == AIProvider.Ollama)
+    {
+        var promptPath = config.PromptFilePath;
+        if (!File.Exists(promptPath))
+        {
+            Console.Error.WriteLine($"[ERROR] prompt.md not found at {promptPath}");
+            return 1;
+        }
+
+        var prompt = await File.ReadAllTextAsync(promptPath);
+        var client = new OllamaClient(
+            ollamaUrl ?? "http://localhost:11434",
+            ollamaModel ?? "llama3.1:8b",
+            targetDir);
+
+        client.OnOutput += text => Console.Write(text);
+        client.OnToolCall += (name, args) => Console.WriteLine($"\n[Tool: {name}]");
+        client.OnToolResult += (name, result) =>
+        {
+            var preview = result.Length > 200 ? result.Substring(0, 200) + "..." : result;
+            Console.WriteLine($"[Result: {preview}]\n");
+        };
+        client.OnError += err => Console.Error.WriteLine($"\n[ERROR] {err}");
+        client.OnIterationComplete += iter => Console.WriteLine($"\n=== Iteration {iter} complete ===\n");
+
+        // Handle Ctrl+C
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            Console.WriteLine("\n[Stopping...]");
+            client.Stop();
+        };
+
+        Console.WriteLine("[Press Ctrl+C to stop]\n");
+        Console.WriteLine("=== Starting Ollama session ===\n");
+
+        try
+        {
+            var result = await client.RunAsync(prompt, CancellationToken.None);
+            Console.WriteLine($"\n=== Session complete: {(result.Success ? "SUCCESS" : "FAILED")} ===");
+            if (!result.Success && !string.IsNullOrEmpty(result.Error))
+            {
+                Console.Error.WriteLine($"Error: {result.Error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"\n[ERROR] {ex.Message}");
+        }
+
+        Console.WriteLine("\n[Goodbye!]");
+        return 0;
+    }
+
+    // For other providers, use LoopController
+    using var consoleController = new LoopController(config);
+    var loopStopRequested = false;
+
+    consoleController.OnOutput += line =>
+    {
+        Console.WriteLine(line);
+    };
+    consoleController.OnError += line =>
+    {
+        Console.Error.WriteLine($"[ERROR] {line}");
+    };
+    consoleController.OnIterationStart += iter =>
+    {
+        Console.WriteLine($"\n=== Starting iteration {iter} ===");
+    };
+    consoleController.OnIterationComplete += (iter, result) =>
+    {
+        var status = result.Success ? "SUCCESS" : "FAILED";
+        Console.WriteLine($"=== Iteration {iter} complete: {status} ===\n");
+    };
+    consoleController.OnStateChanged += newState =>
+    {
+        Console.WriteLine($"[State: {newState}]");
+    };
+
+    // Handle Ctrl+C
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true;
+        loopStopRequested = true;
+        Console.WriteLine("\n[Stopping... press Ctrl+C again to force quit]");
+        consoleController.Stop();
+    };
+
+    Console.WriteLine("[Press Ctrl+C to stop]\n");
+    await consoleController.StartAsync();
+
+    // Wait for completion or stop
+    while (consoleController.State == LoopState.Running && !loopStopRequested)
+    {
+        await Task.Delay(100);
+    }
+
+    Console.WriteLine("\n[Goodbye!]");
+    return 0;
 }
 
 // Create components

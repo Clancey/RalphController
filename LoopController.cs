@@ -13,6 +13,7 @@ public class LoopController : IDisposable
     private readonly ResponseAnalyzer _responseAnalyzer;
     private readonly RateLimiter _rateLimiter;
     private AIProcess? _currentProcess;
+    private OllamaClient? _ollamaClient;
     private CancellationTokenSource? _loopCts;
     private TaskCompletionSource? _pauseTcs;
     private string? _injectedPrompt;
@@ -262,66 +263,100 @@ public class LoopController : IDisposable
             prompt = await GetPromptAsync();
         }
 
-        // Create and run process
-        _currentProcess = new AIProcess(_config);
-        _currentProcess.OnOutput += line => OnOutput?.Invoke(line);
-        _currentProcess.OnError += line => OnError?.Invoke(line);
-
-        try
+        // Create and run process - use OllamaClient for Ollama provider
+        AIResult result;
+        if (_config.Provider == AIProvider.Ollama)
         {
-            var result = await _currentProcess.RunAsync(prompt, cancellationToken);
-            _statistics.CompleteIteration(result.Success);
-            OnIterationComplete?.Invoke(_statistics.CurrentIteration, result);
+            // For Ollama, use OllamaClient with streaming support
+            var baseUrl = _config.ProviderConfig.ExecutablePath ?? "http://localhost:11434";
+            var model = _config.ProviderConfig.Arguments ?? "llama3.1:8b";
 
-            // Count modified files for circuit breaker
-            var filesModified = CountModifiedFiles();
-
-            // Record result with circuit breaker
-            if (_config.EnableCircuitBreaker)
+            _ollamaClient = new OllamaClient(baseUrl, model, _config.TargetDirectory);
+            _ollamaClient.OnOutput += text => OnOutput?.Invoke(text);
+            _ollamaClient.OnToolCall += (name, args) => OnOutput?.Invoke($"[Tool: {name}]");
+            _ollamaClient.OnToolResult += (name, res) =>
             {
-                _circuitBreaker.RecordResult(result, filesModified);
-            }
+                var preview = res.Length > 500 ? res.Substring(0, 500) + "..." : res;
+                OnOutput?.Invoke($"[Result: {preview}]");
+            };
+            _ollamaClient.OnError += err => OnError?.Invoke(err);
 
-            // Analyze response for completion signals
-            if (_config.EnableResponseAnalyzer)
+            try
             {
-                var analysis = _responseAnalyzer.Analyze(result);
-
-                if (analysis.ShouldExit && _config.AutoExitOnCompletion)
+                var ollamaResult = await _ollamaClient.RunAsync(prompt, cancellationToken);
+                result = new AIResult
                 {
-                    OnOutput?.Invoke($"Completion detected: {analysis.ExitReason}");
-                    Stop();
-                }
+                    Success = ollamaResult.Success,
+                    ExitCode = ollamaResult.Success ? 0 : 1,
+                    Output = ollamaResult.Output,
+                    Error = ollamaResult.Error
+                };
             }
-
-            var rateLimitInfo = ResponseAnalyzer.TryDetectRateLimit(result);
-            if (rateLimitInfo is not null)
+            finally
             {
-                var resetAt = rateLimitInfo.ResetAt ?? DateTimeOffset.UtcNow.AddMinutes(30);
-                _providerRateLimitUntil = resetAt;
-                _providerRateLimitMessage = rateLimitInfo.Message;
-
-                var localReset = resetAt.ToLocalTime();
-                var resetText = rateLimitInfo.ResetAt.HasValue
-                    ? $"{localReset:MMM d h:mm tt}"
-                    : $"{localReset:MMM d h:mm tt} (fallback)";
-
-                var message = string.IsNullOrWhiteSpace(_providerRateLimitMessage)
-                    ? "Provider rate limit detected"
-                    : $"Provider rate limit detected: {_providerRateLimitMessage}";
-
-                OnOutput?.Invoke($"{message}. Waiting until {resetText}.");
+                _ollamaClient.Dispose();
+                _ollamaClient = null;
             }
         }
-        catch (OperationCanceledException)
+        else
         {
-            _statistics.CompleteIteration(false);
-            throw;
+            // For other providers, use AIProcess
+            _currentProcess = new AIProcess(_config);
+            _currentProcess.OnOutput += line => OnOutput?.Invoke(line);
+            _currentProcess.OnError += line => OnError?.Invoke(line);
+
+            try
+            {
+                result = await _currentProcess.RunAsync(prompt, cancellationToken);
+            }
+            finally
+            {
+                _currentProcess.Dispose();
+                _currentProcess = null;
+            }
         }
-        finally
+
+        _statistics.CompleteIteration(result.Success);
+        OnIterationComplete?.Invoke(_statistics.CurrentIteration, result);
+
+        // Count modified files for circuit breaker
+        var filesModified = CountModifiedFiles();
+
+        // Record result with circuit breaker
+        if (_config.EnableCircuitBreaker)
         {
-            _currentProcess.Dispose();
-            _currentProcess = null;
+            _circuitBreaker.RecordResult(result, filesModified);
+        }
+
+        // Analyze response for completion signals
+        if (_config.EnableResponseAnalyzer)
+        {
+            var analysis = _responseAnalyzer.Analyze(result);
+
+            if (analysis.ShouldExit && _config.AutoExitOnCompletion)
+            {
+                OnOutput?.Invoke($"Completion detected: {analysis.ExitReason}");
+                Stop();
+            }
+        }
+
+        var rateLimitInfo = ResponseAnalyzer.TryDetectRateLimit(result);
+        if (rateLimitInfo is not null)
+        {
+            var resetAt = rateLimitInfo.ResetAt ?? DateTimeOffset.UtcNow.AddMinutes(30);
+            _providerRateLimitUntil = resetAt;
+            _providerRateLimitMessage = rateLimitInfo.Message;
+
+            var localReset = resetAt.ToLocalTime();
+            var resetText = rateLimitInfo.ResetAt.HasValue
+                ? $"{localReset:MMM d h:mm tt}"
+                : $"{localReset:MMM d h:mm tt} (fallback)";
+
+            var message = string.IsNullOrWhiteSpace(_providerRateLimitMessage)
+                ? "Provider rate limit detected"
+                : $"Provider rate limit detected: {_providerRateLimitMessage}";
+
+            OnOutput?.Invoke($"{message}. Waiting until {resetText}.");
         }
     }
 
@@ -420,6 +455,7 @@ public class LoopController : IDisposable
         _loopCts?.Cancel();
         _loopCts?.Dispose();
         _currentProcess?.Dispose();
+        _ollamaClient?.Dispose();
         _pauseTcs?.TrySetCanceled();
 
         GC.SuppressFinalize(this);

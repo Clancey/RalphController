@@ -89,23 +89,31 @@ public class OllamaClient : IDisposable
 
                 if (_stopRequested) break;
 
-                // Build assistant message for history
-                var assistantMessage = new ChatMessage
-                {
-                    Role = "assistant",
-                    Content = string.IsNullOrEmpty(textContent) ? null : textContent,
-                    ToolCalls = toolCalls.Count > 0 ? toolCalls : null
-                };
-                _conversationHistory.Add(assistantMessage);
-
                 // Check if there are tool calls to execute (native or parsed from text)
                 var isTextParsedToolCall = false;
+                var contentForHistory = textContent;
+
                 if (toolCalls.Count == 0 && !string.IsNullOrEmpty(textContent))
                 {
                     // Try to parse tool calls from text (for models that don't use native tool calling)
                     toolCalls = ParseToolCallsFromText(textContent);
                     isTextParsedToolCall = toolCalls.Count > 0;
+
+                    if (isTextParsedToolCall)
+                    {
+                        // Strip tool call tags from content to avoid confusing the model
+                        contentForHistory = StripToolCallTags(textContent);
+                    }
                 }
+
+                // Build assistant message for history
+                var assistantMessage = new ChatMessage
+                {
+                    Role = "assistant",
+                    Content = string.IsNullOrEmpty(contentForHistory) ? null : contentForHistory,
+                    ToolCalls = toolCalls.Count > 0 && !isTextParsedToolCall ? toolCalls : null
+                };
+                _conversationHistory.Add(assistantMessage);
 
                 if (toolCalls.Count > 0)
                 {
@@ -117,7 +125,6 @@ public class OllamaClient : IDisposable
                         var toolArgs = toolCall.Function?.Arguments ?? "{}";
 
                         OnToolCall?.Invoke(toolName, toolArgs);
-                        OnOutput?.Invoke($"\n[Tool: {toolName}]\n");
 
                         // Execute the tool
                         var toolResult = await ExecuteToolAsync(toolName, toolArgs, cancellationToken);
@@ -127,7 +134,6 @@ public class OllamaClient : IDisposable
                             ? toolResult.Substring(0, 1000) + "\n... (truncated)"
                             : toolResult;
                         OnToolResult?.Invoke(toolName, displayResult);
-                        OnOutput?.Invoke($"[Result: {displayResult}]\n\n");
 
                         if (isTextParsedToolCall)
                         {
@@ -377,6 +383,31 @@ public class OllamaClient : IDisposable
         }
 
         return toolCalls;
+    }
+
+    /// <summary>
+    /// Strip tool call XML tags from text to avoid confusing the model in conversation history
+    /// </summary>
+    private static string StripToolCallTags(string text)
+    {
+        // Remove <function=...>...</function> blocks
+        var result = System.Text.RegularExpressions.Regex.Replace(
+            text,
+            @"<function=\w+>.*?</function>",
+            "",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+
+        // Remove any trailing </tool_call> tags
+        result = System.Text.RegularExpressions.Regex.Replace(
+            result,
+            @"</tool_call>",
+            "",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+
+        // Clean up extra whitespace
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\n{3,}", "\n\n");
+
+        return result.Trim();
     }
 
     private async Task<string> ExecuteToolAsync(string toolName, string argsJson, CancellationToken cancellationToken)
@@ -657,19 +688,24 @@ public class OllamaClient : IDisposable
         return Path.GetFullPath(Path.Combine(_workingDirectory, path));
     }
 
-    private static string GetSystemPrompt() => @"You are an expert software engineer working autonomously to complete tasks. You have access to tools that let you read files, write files, edit files, run bash commands, and search the codebase.
+    private static string GetSystemPrompt() => @"You are an expert software engineer. You have tools to interact with the codebase:
 
-IMPORTANT GUIDELINES:
-1. Always read files before editing them to understand the current state
-2. Use the edit_file tool for precise changes - it requires an exact match of old_string
-3. Use bash for running tests, builds, and git commands
-4. Use glob to find files by pattern
-5. Use grep to search for text in files
-6. Be thorough but focused - complete one task at a time
-7. After making changes, verify they work by running tests or builds
-8. Commit successful changes with descriptive messages
+AVAILABLE TOOLS:
+- read_file: Read file contents (always read before editing)
+- write_file: Create or overwrite a file
+- edit_file: Replace exact text in a file (old_string must match exactly)
+- bash: Run shell commands (builds, tests, git, etc.)
+- glob: Find files by pattern (e.g., '**/*.cs')
+- grep: Search file contents
+- list_directory: List directory contents
 
-When you have completed the task or have no more work to do, simply respond with your final summary without calling any tools.";
+TOOL USAGE:
+- read_file before edit_file to see current state
+- edit_file requires EXACT match of old_string including whitespace
+- Use bash for: git commands, builds, tests, installations
+- If file not found: use list_directory or glob to find it
+
+When done, respond with a summary (no tool calls).";
 
     private static List<ToolDefinition> GetToolDefinitions() => new()
     {

@@ -284,9 +284,16 @@ Directory containing specification markdown files that describe features to impl
 When you point RalphController at a directory missing required files, you'll be prompted with options:
 
 1. **Generate files using AI** - Provide a project description or spec file path
-2. **Create default template files** - Use generic templates
+2. **Create default template files** - Use generic templates (recommended for code-focused models)
 3. **Continue anyway** - Skip scaffolding (requires at least `prompt.md`)
 4. **Exit** - Cancel
+
+> **⚠️ Important: Code-focused models (like qwen-coder, deepseek-coder, codellama) often fail at scaffolding because they don't follow meta-instructions well. They tend to echo the spec content instead of generating proper Ralph files.**
+>
+> **Recommended approach:**
+> - Use **"Create default template files"** option, then manually customize them
+> - Or use a general-purpose model (like llama3, mistral, or claude) for scaffolding only
+> - Code-focused models work great for the actual coding loop once files are set up
 
 ### Using a Spec File
 
@@ -506,6 +513,84 @@ If tool calling still doesn't work:
    ```
 
 For more details, see the [OpenCode Ollama setup guide](https://github.com/p-lemonish/ollama-x-opencode).
+
+## Configuring LM Studio
+
+When using Ralph with the `--ollama` flag pointing to LM Studio, you need to configure sufficient context length for the AI to process prompts and generate responses.
+
+### The Problem
+
+LM Studio defaults to a 4096 token context window, which is often too small for:
+- Project scaffolding (reading spec files)
+- Long conversations with tool calling
+- Processing large codebases
+
+### Solution: Configure Context Settings in LM Studio
+
+LM Studio has two context-related settings you need to configure:
+
+**Step 1: Open Model Settings**
+
+In LM Studio, click the gear icon next to your loaded model to open settings.
+
+**Step 2: Set "Model supports up to"**
+
+> *"This is the maximum number of tokens the model was trained to handle. Click to set the context to this value."*
+
+This setting defines the architectural limit of the model. You must set this first to unlock higher context lengths.
+
+| Model | Model Supports Up To |
+|-------|---------------------|
+| Qwen3-Coder (any size) | 131072 (128K) |
+| Llama 3.x | 8192 (or 131072 for extended) |
+| DeepSeek Coder | 16384 (16K) |
+| Mistral/Mixtral | 32768 (32K) |
+
+**Recommended**: For Qwen3-Coder, set to **131072**.
+
+**Step 3: Set "Context Length"**
+
+> *"The maximum number of tokens the model can attend to in one prompt. See the Conversation Overflow options under 'Inference params' for more ways to manage this."*
+
+This is the actual working context for your session. It must be ≤ the "Model supports up to" value.
+
+| Model Size | Recommended Context Length | VRAM Required |
+|------------|---------------------------|---------------|
+| 7B-8B      | 8192 (8K)                 | ~6GB          |
+| 13B-14B    | 16384 (16K)               | ~12GB         |
+| 30B-32B    | 32768 (32K)               | ~24GB         |
+| 70B+       | 32768-65536 (32-64K)      | ~48GB+        |
+
+**Recommended for Ralph**:
+- Set "Model supports up to" to the model's max (e.g., 131072 for Qwen3-Coder)
+- Set "Context Length" to at least **16384** (16K), or **32768** (32K) for large spec files
+
+### Usage with Ralph
+
+```bash
+# Using LM Studio as Ollama provider
+ralph --ollama --url http://127.0.0.1:1234 --model qwen/qwen3-coder-30b
+
+# Or point to a remote LM Studio server
+ralph --ollama --url http://192.168.1.100:1234 --model your-model-name
+```
+
+### Troubleshooting
+
+**Error: "tokens to keep from initial prompt is greater than context length"**
+- Increase context length in LM Studio settings
+- Try a smaller spec file for scaffolding
+- Ralph automatically truncates prompts over 3000 chars for Ollama/LMStudio
+
+**Model generates code instead of markdown files**
+- Code-focused models (like qwen-coder) may try to implement rather than scaffold
+- Consider using a general-purpose model for initial scaffolding
+- Or manually create scaffold files and use code models for implementation
+
+**Slow generation**
+- Larger context windows require more computation
+- Consider using a smaller context if you don't need it
+- GPU acceleration significantly improves speed
 
 ## Contributing
 

@@ -320,17 +320,23 @@ public class ConsoleUI : IDisposable
         // Only process raw AI output - internal messages already have Spectre markup
         if (isRawOutput)
         {
-            // Convert ANSI escape codes to Spectre markup, escape all other brackets
-            line = ConvertAnsiToMarkup(line);
+            // First, strip ALL ANSI escape sequences completely (including cursor movement, clear screen, etc.)
+            line = StripAllAnsiSequences(line);
+
+            // Escape any Spectre markup characters in the raw output
+            line = Markup.Escape(line);
+
+            // Prefix with "OUT:" to show it's AI output
+            line = $"[green]OUT:[/] {line}";
 
             // If it's an error and doesn't have any color markup, wrap in red
-            if (isError && !line.Contains("[red]") && !line.Contains("[yellow]"))
+            if (isError)
             {
-                line = $"[red]{line}[/]";
+                line = $"[red]ERR: {Markup.Escape(line)}[/]";
             }
         }
 
-        // Remove control characters that can mess up the layout (but preserve markup brackets)
+        // Remove control characters that can mess up the layout
         line = new string(line.Where(c => !char.IsControl(c) || c == ' ').ToArray());
 
         // Truncate long lines to prevent layout issues
@@ -403,6 +409,56 @@ public class ConsoleUI : IDisposable
                 _streamBuffer.Clear();
             }
         }
+    }
+
+    /// <summary>
+    /// Strip ALL ANSI escape sequences from a string (cursor movement, colors, clear screen, etc.)
+    /// This is more aggressive than ConvertAnsiToMarkup and removes everything
+    /// </summary>
+    private static string StripAllAnsiSequences(string input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return input;
+
+        var result = new System.Text.StringBuilder();
+        var i = 0;
+
+        while (i < input.Length)
+        {
+            // Check for ANSI escape sequence (ESC followed by [ or other control chars)
+            if (input[i] == '\x1B')
+            {
+                // Skip the escape character and find the end of the sequence
+                i++;
+                if (i < input.Length && input[i] == '[')
+                {
+                    // CSI sequence - skip until we hit a letter (the command)
+                    i++;
+                    while (i < input.Length && !char.IsLetter(input[i]))
+                        i++;
+                    if (i < input.Length)
+                        i++; // Skip the command letter too
+                }
+                else if (i < input.Length)
+                {
+                    // Other escape sequence - skip next character
+                    i++;
+                }
+                continue;
+            }
+
+            // Skip other problematic control characters
+            if (input[i] == '\r')
+            {
+                i++;
+                continue;
+            }
+
+            result.Append(input[i]);
+            i++;
+        }
+
+        return result.ToString();
     }
 
     private static string ConvertAnsiToMarkup(string input)

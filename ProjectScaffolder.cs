@@ -1,3 +1,6 @@
+using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
 using RalphController.Models;
 
 namespace RalphController;
@@ -109,6 +112,12 @@ public class ProjectScaffolder
     {
         OnScaffoldStart?.Invoke(fileName);
 
+        // Use HTTP API for Ollama provider instead of process
+        if (_config.ProviderConfig.Provider == AIProvider.Ollama)
+        {
+            return await ScaffoldFileViaOllamaAsync(fileName, prompt, cancellationToken);
+        }
+
         var process = new AIProcess(_config);
         process.OnOutput += line => OnOutput?.Invoke(line);
         process.OnError += line => OnOutput?.Invoke($"[ERROR] {line}");
@@ -139,6 +148,328 @@ public class ProjectScaffolder
         {
             process.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Scaffold a file using Ollama HTTP API
+    /// </summary>
+    private async Task<bool> ScaffoldFileViaOllamaAsync(string fileName, string prompt, CancellationToken cancellationToken)
+    {
+        var baseUrl = _config.ProviderConfig.ExecutablePath.TrimEnd('/');  // URL stored in ExecutablePath
+        var model = _config.ProviderConfig.Arguments;  // Model stored in Arguments
+
+        // Truncate prompt if too long for local models
+        // 4096 token context = ~3000 chars max to leave room for response (~1000 tokens)
+        const int maxPromptLength = 3000;
+        if (prompt.Length > maxPromptLength)
+        {
+            // Find PROJECT CONTEXT section and truncate it
+            var contextMarker = "PROJECT CONTEXT:";
+            var contextStart = prompt.IndexOf(contextMarker);
+            if (contextStart >= 0)
+            {
+                var contextEnd = prompt.IndexOf("\n\n", contextStart + contextMarker.Length + 100);
+                if (contextEnd > contextStart)
+                {
+                    var contextContent = prompt.Substring(contextStart, contextEnd - contextStart);
+                    var maxContextLen = maxPromptLength - (prompt.Length - contextContent.Length);
+                    if (maxContextLen > 500)
+                    {
+                        var truncatedContext = contextContent.Length > maxContextLen
+                            ? contextContent.Substring(0, maxContextLen) + "\n... [truncated for length]"
+                            : contextContent;
+                        prompt = prompt.Substring(0, contextStart) + truncatedContext + prompt.Substring(contextEnd);
+                    }
+                }
+            }
+
+            // If still too long, hard truncate
+            if (prompt.Length > maxPromptLength)
+            {
+                prompt = prompt.Substring(0, maxPromptLength) + "\n\n... [truncated]";
+            }
+        }
+
+        try
+        {
+            using var httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+
+            // Build system prompt based on file type - be VERY explicit about format
+            string systemPrompt;
+            if (fileName == "prompt.md")
+            {
+                systemPrompt = """
+                    You are creating a prompt.md file for an autonomous AI coding agent.
+
+                    CRITICAL: This is NOT a spec or documentation. It's a SHORT instruction file (under 300 words).
+                    The prompt tells the AI what to do EACH LOOP ITERATION.
+
+                    YOUR OUTPUT MUST START EXACTLY LIKE THIS:
+                    ```
+                    Study agents.md for project context.
+                    Study specs/* for requirements.
+                    Study implementation_plan.md for progress.
+
+                    Choose the most important incomplete task (High Priority first).
+                    Implement ONE thing.
+                    ```
+
+                    Then add project-specific instructions and the RALPH_STATUS block.
+
+                    DO NOT output JSON. DO NOT output the project spec. Output ONLY the prompt instructions.
+                    """;
+            }
+            else if (fileName == "implementation_plan.md")
+            {
+                systemPrompt = """
+                    You are creating an implementation_plan.md task list for an autonomous AI agent.
+
+                    YOUR OUTPUT MUST START EXACTLY LIKE THIS:
+                    ```
+                    # Implementation Plan
+
+                    ## Completed
+                    - [x] Project initialized
+
+                    ## High Priority
+                    - [ ] First critical task
+                    ```
+
+                    Create tasks based on the project requirements. Use markdown checkboxes.
+                    DO NOT output JSON. Output ONLY the markdown task list.
+                    """;
+            }
+            else if (fileName.EndsWith(".md"))
+            {
+                systemPrompt = $"""
+                    You are generating content for a markdown file named '{fileName}'.
+
+                    CRITICAL FORMAT REQUIREMENTS:
+                    - Output valid MARKDOWN content ONLY
+                    - Do NOT output JSON
+                    - Do NOT wrap output in code blocks
+                    - Do NOT add commentary before or after
+                    - Start DIRECTLY with markdown (e.g., '# Heading')
+
+                    The output will be saved directly as {fileName}. Begin with the markdown content now.
+                    """;
+            }
+            else
+            {
+                systemPrompt = $"You are an expert software architect. Generate the content for '{fileName}'. Output ONLY the raw file content with no commentary or code blocks.";
+            }
+
+            // Try OpenAI-compatible endpoint first (works with LMStudio and many others)
+            var requestBody = new
+            {
+                model = model,
+                messages = new[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = prompt }
+                },
+                stream = true,
+                temperature = 0.7
+            };
+
+            var jsonContent = new StringContent(
+                JsonSerializer.Serialize(requestBody),
+                Encoding.UTF8,
+                "application/json");
+
+            // Use ResponseHeadersRead to enable streaming (don't buffer the entire response)
+            var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/chat/completions")
+            {
+                Content = jsonContent
+            };
+            var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                // Fall back to Ollama native endpoint
+                var ollamaRequest = new
+                {
+                    model = model,
+                    messages = new[]
+                    {
+                        new { role = "system", content = systemPrompt },
+                        new { role = "user", content = prompt }
+                    },
+                    stream = true
+                };
+
+                jsonContent = new StringContent(
+                    JsonSerializer.Serialize(ollamaRequest),
+                    Encoding.UTF8,
+                    "application/json");
+
+                request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/chat")
+                {
+                    Content = jsonContent
+                };
+                response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                OnOutput?.Invoke($"[ERROR] API returned {response.StatusCode}: {errorContent}");
+                OnScaffoldComplete?.Invoke(fileName, false);
+                return false;
+            }
+
+            // Parse streaming response
+            var content = new StringBuilder();
+            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var reader = new StreamReader(stream);
+
+            var lineCount = 0;
+            while (!reader.EndOfStream && !cancellationToken.IsCancellationRequested)
+            {
+                var line = await reader.ReadLineAsync(cancellationToken);
+                lineCount++;
+
+                if (string.IsNullOrEmpty(line)) continue;
+
+                // Handle SSE format
+                if (line.StartsWith("data: "))
+                {
+                    var data = line.Substring(6);
+                    if (data == "[DONE]") break;
+
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(data);
+                        var root = doc.RootElement;
+
+                        // OpenAI format: choices[0].delta.content
+                        if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+                        {
+                            var choice = choices[0];
+                            if (choice.TryGetProperty("delta", out var delta) &&
+                                delta.TryGetProperty("content", out var textEl))
+                            {
+                                var text = textEl.GetString();
+                                if (!string.IsNullOrEmpty(text))
+                                {
+                                    content.Append(text);
+                                    OnOutput?.Invoke(text);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        OnOutput?.Invoke($"[DEBUG] Parse error: {ex.Message}");
+                    }
+                }
+                else if (line.StartsWith("{"))
+                {
+                    // Ollama native format: message.content
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(line);
+                        var root = doc.RootElement;
+
+                        if (root.TryGetProperty("message", out var message) &&
+                            message.TryGetProperty("content", out var textEl))
+                        {
+                            var text = textEl.GetString();
+                            if (!string.IsNullOrEmpty(text))
+                            {
+                                content.Append(text);
+                                OnOutput?.Invoke(text);
+                            }
+                        }
+                    }
+                    catch { /* Skip unparseable lines */ }
+                }
+            }
+
+            // Write the generated content to file
+            var fileContent = content.ToString().Trim();
+            if (string.IsNullOrEmpty(fileContent))
+            {
+                OnOutput?.Invoke("[ERROR] No content generated");
+                OnScaffoldComplete?.Invoke(fileName, false);
+                return false;
+            }
+
+            // Remove markdown code blocks if present
+            fileContent = StripMarkdownCodeBlocks(fileContent);
+
+            // Detect if model output JSON instead of markdown for .md files
+            if (fileName.EndsWith(".md") && (fileContent.TrimStart().StartsWith("{") || fileContent.TrimStart().StartsWith("[")))
+            {
+                OnOutput?.Invoke("\n[WARNING] Model output JSON instead of markdown. This is a known issue with code-focused models.");
+                OnOutput?.Invoke("[TIP] Try using a general-purpose model, or create scaffold files manually.");
+                OnOutput?.Invoke("[TIP] You can also use --fresh and choose 'Create default template files' option.");
+                OnScaffoldComplete?.Invoke(fileName, false);
+                return false;
+            }
+
+            // Detect if model just echoed back the spec instead of creating the requested file
+            // This happens when code-focused models don't follow meta-instructions
+            var isScaffoldFile = fileName == "prompt.md" || fileName == "implementation_plan.md" || fileName == "agents.md";
+            var looksLikeSpec = (fileContent.Contains("## Overview") && fileContent.Contains("## Architecture")) ||
+                               (fileContent.Contains("MCP (Model Context Protocol)") || fileContent.Contains("server that provides AI agents"));
+            var notProperFormat = fileName == "prompt.md" && !fileContent.Contains("Study agents.md") && !fileContent.Contains("Study implementation_plan.md");
+
+            if (isScaffoldFile && (looksLikeSpec || notProperFormat))
+            {
+                OnOutput?.Invoke($"\n[WARNING] Model echoed the spec instead of creating {fileName}.");
+                OnOutput?.Invoke("[ISSUE] Code-focused models (like qwen-coder) often struggle with meta-instructions.");
+                OnOutput?.Invoke("[TIP] Use a general-purpose model for scaffolding, or choose 'Create default template files'.");
+                OnOutput?.Invoke("[TIP] You can then manually edit the generated templates.");
+                OnScaffoldComplete?.Invoke(fileName, false);
+                return false;
+            }
+
+            // Determine the full path
+            var fullPath = fileName.Contains('/')
+                ? Path.Combine(_config.TargetDirectory, fileName.TrimStart('/'))
+                : Path.Combine(_config.TargetDirectory, fileName);
+
+            // Create directory if needed
+            var dir = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            await File.WriteAllTextAsync(fullPath, fileContent, cancellationToken);
+            OnOutput?.Invoke($"\n[SUCCESS] Created {fileName}");
+            OnScaffoldComplete?.Invoke(fileName, true);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            OnOutput?.Invoke($"[EXCEPTION] {ex.Message}");
+            OnScaffoldComplete?.Invoke(fileName, false);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Strip markdown code blocks from generated content
+    /// </summary>
+    private static string StripMarkdownCodeBlocks(string content)
+    {
+        var lines = content.Split('\n').ToList();
+
+        // Remove leading code block marker
+        if (lines.Count > 0 && lines[0].StartsWith("```"))
+        {
+            lines.RemoveAt(0);
+        }
+
+        // Remove trailing code block marker
+        if (lines.Count > 0 && lines[^1].Trim() == "```")
+        {
+            lines.RemoveAt(lines.Count - 1);
+        }
+
+        return string.Join('\n', lines);
     }
 
 
@@ -303,33 +634,44 @@ public class ProjectScaffolder
         """;
 
     private static string GetDefaultPromptMd() => """
-        Study agents.md for project context.
-        Study specs/* for requirements.
-        Study implementation_plan.md for progress.
+        ## Context Loading
+        1. Read agents.md for project context and build commands
+        2. Read specs/* for requirements
+        3. Read implementation_plan.md for current progress
 
-        Choose the most important incomplete task (High Priority first).
-        Implement ONE thing.
-        Run tests after changes.
-        Update implementation_plan.md with progress.
-        Commit on success.
+        ## Task Execution
+        1. Choose the FIRST incomplete High Priority task
+        2. Implement ONE thing completely
+        3. Run tests/build to verify
+        4. Update implementation_plan.md (mark complete, add notes)
 
-        Don't assume not implemented - search first.
+        ## Git Commits - MANDATORY
+        After EVERY successful change:
+        ```bash
+        git add -A && git commit -m "Description of change"
+        ```
+        DO NOT skip commits. Commit before moving to next task.
 
-        ## Agent Usage
-        - Use Task tool to spawn agents for parallel work (research, exploring, generating code)
-        - Spawn multiple agents when tasks are independent
-        - NEVER run builds/tests in parallel - one at a time only
-        - Use agents liberally for reading, exploring, and generating
+        ## Error Handling
+        - If file not found: use list_directory or glob to find it
+        - If command fails: try different approach, don't repeat same error
+        - If stuck after 3 attempts: mark task as blocked, move on
+
+        ## Rules
+        - Search before implementing (don't assume not implemented)
+        - Read files before editing
+        - One task per iteration
+        - No placeholders or TODOs - complete implementations only
 
         ## Status Reporting
-        End every response with:
+        End response with:
         ```
         ---RALPH_STATUS---
         STATUS: IN_PROGRESS | COMPLETE | BLOCKED
         TASKS_COMPLETED: <number>
         FILES_MODIFIED: <number>
         TESTS_PASSED: true | false
-        EXIT_SIGNAL: true | false (true only when ALL work is done)
+        EXIT_SIGNAL: true | false
         NEXT_STEP: <what to do next>
         ---END_STATUS---
         ```

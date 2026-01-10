@@ -837,6 +837,19 @@ if (!structure.IsComplete && !initMode)
     switch (action)
     {
         case "Generate files using AI":
+            // Warn about code-focused models having issues with scaffolding
+            if (config.ProviderConfig.Provider == AIProvider.Ollama)
+            {
+                AnsiConsole.Write(new Panel(
+                    "[yellow]⚠️ Warning: Code-focused models (qwen-coder, deepseek-coder, codellama, etc.)\n" +
+                    "often struggle with generating scaffold files. They may output JSON or echo\n" +
+                    "the spec instead of creating proper Ralph files.\n\n" +
+                    "If scaffolding fails, try 'Create default template files' instead.[/]")
+                    .Header("[yellow]Local Model Notice[/]")
+                    .BorderColor(Color.Yellow));
+                AnsiConsole.WriteLine();
+            }
+
             // Ask for project description - we can't generate without context
             AnsiConsole.MarkupLine("\n[yellow]To generate project files, I need to understand your project.[/]");
             AnsiConsole.MarkupLine("[dim]You can provide a description, or path to a document (README, spec, etc.)[/]\n");

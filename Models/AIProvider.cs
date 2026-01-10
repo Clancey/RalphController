@@ -14,6 +14,9 @@ public enum AIProvider
     /// <summary>GitHub Copilot CLI</summary>
     Copilot,
 
+    /// <summary>Google Gemini CLI</summary>
+    Gemini,
+
     /// <summary>OpenCode CLI</summary>
     OpenCode,
 
@@ -92,6 +95,20 @@ public record AIProviderConfig
             : $"run --format json --model {model}",
         UsesStdin = false,
         UsesPromptArgument = true
+    };
+
+    public static AIProviderConfig ForGemini(string? executablePath = null, string? model = null) => new()
+    {
+        Provider = AIProvider.Gemini,
+        ExecutablePath = executablePath ?? "gemini",
+        // --yolo for auto-approve, -o stream-json for streaming, -m for model
+        // Uses positional prompt argument
+        Arguments = string.IsNullOrWhiteSpace(model)
+            ? "--yolo -o stream-json"
+            : $"--yolo -o stream-json -m {model}",
+        UsesStdin = false,
+        UsesPromptArgument = true,  // Prompt is passed as positional argument
+        UsesStreamJson = true
     };
 
     public static AIProviderConfig ForOllama(string? baseUrl = null, string? model = null) => new()

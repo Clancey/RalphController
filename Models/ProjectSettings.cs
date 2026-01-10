@@ -23,6 +23,9 @@ public class ProjectSettings
     /// <summary>Model to use for Copilot (e.g., gpt-5, claude-sonnet-4)</summary>
     public string? CopilotModel { get; set; }
 
+    /// <summary>Model to use for Gemini (e.g., gemini-2.5-pro, gemini-2.5-flash)</summary>
+    public string? GeminiModel { get; set; }
+
     /// <summary>Model to use for OpenCode (e.g., anthropic/claude-3-5-sonnet)</summary>
     public string? OpenCodeModel { get; set; }
 

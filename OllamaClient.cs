@@ -17,6 +17,7 @@ public class OllamaClient : IDisposable
     private readonly string _model;
     private readonly string _workingDirectory;
     private readonly List<ChatMessage> _conversationHistory = new();
+    private readonly string _sessionId;
     private bool _disposed;
     private bool _stopRequested;
 
@@ -40,6 +41,7 @@ public class OllamaClient : IDisposable
         _baseUrl = baseUrl.TrimEnd('/');
         _model = model;
         _workingDirectory = workingDirectory;
+        _sessionId = $"ralph-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString()[..8]}";
         _httpClient = new HttpClient
         {
             Timeout = TimeSpan.FromMinutes(10)
@@ -688,7 +690,9 @@ public class OllamaClient : IDisposable
         return Path.GetFullPath(Path.Combine(_workingDirectory, path));
     }
 
-    private static string GetSystemPrompt() => @"You are an expert software engineer. You have tools to interact with the codebase:
+    private string GetSystemPrompt() => $@"[Session: {_sessionId}]
+
+You are an expert software engineer. You have tools to interact with the codebase:
 
 AVAILABLE TOOLS:
 - read_file: Read file contents (always read before editing)
@@ -705,7 +709,9 @@ TOOL USAGE:
 - Use bash for: git commands, builds, tests, installations
 - If file not found: use list_directory or glob to find it
 
-When done, respond with a summary (no tool calls).";
+When done, respond with a summary (no tool calls).
+
+This is a NEW session. Do not reference any previous conversations.";
 
     private static List<ToolDefinition> GetToolDefinitions() => new()
     {

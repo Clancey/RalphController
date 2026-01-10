@@ -196,7 +196,36 @@ public class ProjectScaffolder
 
             // Build system prompt based on file type - be VERY explicit about format
             string systemPrompt;
-            if (fileName == "prompt.md")
+            if (fileName == "agents.md")
+            {
+                systemPrompt = """
+                    You are creating an agents.md file for an autonomous AI coding project.
+
+                    CRITICAL: This is an OPERATIONAL GUIDE for how the AI agent should operate.
+                    It defines subagents, rules, and workflows - NOT project documentation.
+
+                    YOUR OUTPUT MUST START EXACTLY LIKE THIS:
+                    ```
+                    # Agent Configuration
+
+                    ## Core Principle: Monolithic Scheduler with Subagents
+
+                    This project uses a single autonomous agent running in a bash loop.
+                    ```
+
+                    REQUIRED SECTIONS:
+                    1. Core Principle - explain scheduler pattern
+                    2. Agent Architecture - ASCII diagram showing Primary Agent and Subagents
+                    3. Subagent Types - define Explore, Implement, Build/Test agents
+                    4. Agent Rules - numbered list of operational rules
+                    5. Task Selection Algorithm - how to pick next task
+                    6. Build Commands - actual commands for this project
+                    7. Error Handling - what to do when things fail
+
+                    DO NOT output JSON. DO NOT output the project spec..
+                    """;
+            }
+            else if (fileName == "prompt.md")
             {
                 systemPrompt = """
                     You are creating a prompt.md file for an autonomous AI coding agent.
@@ -206,17 +235,21 @@ public class ProjectScaffolder
 
                     YOUR OUTPUT MUST START EXACTLY LIKE THIS:
                     ```
-                    Study agents.md for project context.
-                    Study specs/* for requirements.
-                    Study implementation_plan.md for progress.
+                    ## Context Loading
+                    1. Read agents.md for project context
+                    2. Read specs/* for requirements
+                    3. Read implementation_plan.md for progress
 
+                    ## Task Execution
                     Choose the most important incomplete task (High Priority first).
                     Implement ONE thing.
                     ```
 
-                    Then add project-specific instructions and the RALPH_STATUS block.
+                    Include sections for: Context Loading, Task Execution, Git Commits, Error Handling, Rules.
 
-                    DO NOT output JSON. DO NOT output the project spec. Output ONLY the prompt instructions.
+                    DO NOT output JSON. DO NOT output the project spec.
+                    just output the prompt.md file content.
+                    The prompt.md you create may instruct the agent to output status, but YOU should not output status.
                     """;
             }
             else if (fileName == "implementation_plan.md")
@@ -237,6 +270,7 @@ public class ProjectScaffolder
 
                     Create tasks based on the project requirements. Use markdown checkboxes.
                     DO NOT output JSON. Output ONLY the markdown task list.
+                    just output the file content directly.
                     """;
             }
             else if (fileName.EndsWith(".md"))
@@ -411,11 +445,24 @@ public class ProjectScaffolder
             // Detect if model just echoed back the spec instead of creating the requested file
             // This happens when code-focused models don't follow meta-instructions
             var isScaffoldFile = fileName == "prompt.md" || fileName == "implementation_plan.md" || fileName == "agents.md";
-            var looksLikeSpec = (fileContent.Contains("## Overview") && fileContent.Contains("## Architecture")) ||
-                               (fileContent.Contains("MCP (Model Context Protocol)") || fileContent.Contains("server that provides AI agents"));
-            var notProperFormat = fileName == "prompt.md" && !fileContent.Contains("Study agents.md") && !fileContent.Contains("Study implementation_plan.md");
 
-            if (isScaffoldFile && (looksLikeSpec || notProperFormat))
+            // Check for spec-like content (but be careful - agents.md legitimately has "## Agent Architecture")
+            var looksLikeProjectSpec = fileContent.Contains("## Overview") && fileContent.Contains("## Features");
+            var hasMcpSpecContent = fileContent.Contains("MCP (Model Context Protocol)") || fileContent.Contains("server that provides AI agents");
+
+            // Validate proper format for each file type
+            var notProperFormat = false;
+            if (fileName == "prompt.md")
+            {
+                notProperFormat = !fileContent.Contains("agents.md") && !fileContent.Contains("implementation_plan.md");
+            }
+            else if (fileName == "agents.md")
+            {
+                // agents.md should have agent-related content, not just echo the spec
+                notProperFormat = !fileContent.Contains("Agent") && !fileContent.Contains("Subagent");
+            }
+
+            if (isScaffoldFile && (looksLikeProjectSpec || hasMcpSpecContent || notProperFormat))
             {
                 OnOutput?.Invoke($"\n[WARNING] Model echoed the spec instead of creating {fileName}.");
                 OnOutput?.Invoke("[ISSUE] Code-focused models (like qwen-coder) often struggle with meta-instructions.");

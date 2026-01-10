@@ -499,8 +499,9 @@ if (!Directory.Exists(targetDir))
 targetDir = Path.GetFullPath(targetDir);
 AnsiConsole.MarkupLine($"[green]Target directory:[/] {targetDir}");
 
-// Load project settings
+// Load project settings and global settings
 var projectSettings = ProjectSettings.Load(targetDir);
+var globalSettings = GlobalSettings.Load();
 var savedProvider = freshMode ? null : projectSettings.Provider;
 
 // Determine provider: command line > saved > prompt
@@ -624,11 +625,12 @@ string? ollamaUrl = null;
 string? ollamaModel = null;
 if (provider == AIProvider.Ollama)
 {
-    // Handle URL
+    // Handle URL: command line > project settings > global cache > prompt
     if (!string.IsNullOrEmpty(apiUrlFromArgs))
     {
         ollamaUrl = apiUrlFromArgs;
         projectSettings.OllamaUrl = ollamaUrl;
+        globalSettings.LastOllamaUrl = ollamaUrl;
     }
     else if (!freshMode && !string.IsNullOrEmpty(projectSettings.OllamaUrl))
     {
@@ -637,36 +639,52 @@ if (provider == AIProvider.Ollama)
     }
     else
     {
-        // Prompt for URL
+        // Build choices - include last used URL if available
+        var urlChoices = new List<string>();
+
+        // Add last used URL from global cache if available
+        if (!string.IsNullOrEmpty(globalSettings.LastOllamaUrl))
+        {
+            urlChoices.Add($"{globalSettings.LastOllamaUrl} (last used)");
+        }
+
+        // Add standard options (only if not already the last used)
+        if (globalSettings.LastOllamaUrl != "http://localhost:11434")
+            urlChoices.Add("http://localhost:11434 (Ollama local)");
+        if (globalSettings.LastOllamaUrl != "http://127.0.0.1:1234")
+            urlChoices.Add("http://127.0.0.1:1234 (LMStudio)");
+        urlChoices.Add("Enter custom URL...");
+
         ollamaUrl = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
                 .Title("[yellow]Select API endpoint:[/]")
-                .AddChoices(
-                    "http://localhost:11434 (Ollama local)",
-                    "http://127.0.0.1:1234 (LMStudio)",
-                    "Enter custom URL..."));
+                .AddChoices(urlChoices));
 
         if (ollamaUrl == "Enter custom URL...")
         {
+            var defaultUrl = globalSettings.LastOllamaUrl ?? "http://localhost:11434";
             ollamaUrl = AnsiConsole.Prompt(
                 new TextPrompt<string>("[yellow]Enter API URL:[/]")
-                    .DefaultValue("http://localhost:11434"));
+                    .DefaultValue(defaultUrl));
         }
         else
         {
-            // Extract just the URL part
+            // Extract just the URL part (remove description in parentheses)
             ollamaUrl = ollamaUrl.Split(' ')[0];
         }
+
         projectSettings.OllamaUrl = ollamaUrl;
+        globalSettings.LastOllamaUrl = ollamaUrl;
     }
 
     AnsiConsole.MarkupLine($"[green]API URL:[/] {ollamaUrl}");
 
-    // Handle model
+    // Handle model: command line > project settings > global cache > prompt
     if (!string.IsNullOrEmpty(modelFromArgs))
     {
         ollamaModel = modelFromArgs;
         projectSettings.OllamaModel = ollamaModel;
+        globalSettings.LastOllamaModel = ollamaModel;
     }
     else if (!freshMode && !string.IsNullOrEmpty(projectSettings.OllamaModel))
     {
@@ -680,6 +698,14 @@ if (provider == AIProvider.Ollama)
 
         if (availableModels.Count > 0)
         {
+            // If we have a last used model from global cache, put it first
+            if (!string.IsNullOrEmpty(globalSettings.LastOllamaModel) &&
+                availableModels.Contains(globalSettings.LastOllamaModel))
+            {
+                availableModels.Remove(globalSettings.LastOllamaModel);
+                availableModels.Insert(0, $"{globalSettings.LastOllamaModel} (last used)");
+            }
+
             // Add custom option at the end
             availableModels.Add("Enter custom model...");
 
@@ -691,19 +717,28 @@ if (provider == AIProvider.Ollama)
 
             if (ollamaModel == "Enter custom model...")
             {
+                var defaultModel = globalSettings.LastOllamaModel ?? "llama3.1:8b";
                 ollamaModel = AnsiConsole.Prompt(
                     new TextPrompt<string>("[yellow]Enter model name:[/]")
-                        .DefaultValue("llama3.1:8b"));
+                        .DefaultValue(defaultModel));
+            }
+            else if (ollamaModel.EndsWith(" (last used)"))
+            {
+                // Strip the suffix
+                ollamaModel = ollamaModel.Replace(" (last used)", "");
             }
         }
         else
         {
             // Fallback to manual entry if server query failed
+            var defaultModel = globalSettings.LastOllamaModel ?? "llama3.1:8b";
             ollamaModel = AnsiConsole.Prompt(
                 new TextPrompt<string>("[yellow]Enter model name:[/]")
-                    .DefaultValue("llama3.1:8b"));
+                    .DefaultValue(defaultModel));
         }
+
         projectSettings.OllamaModel = ollamaModel;
+        globalSettings.LastOllamaModel = ollamaModel;
     }
 
     AnsiConsole.MarkupLine($"[green]Model:[/] {ollamaModel}");
@@ -715,6 +750,9 @@ if (providerWasSelected || (providerFromArgs.HasValue && providerFromArgs != sav
     projectSettings.Provider = provider;
 }
 projectSettings.Save(targetDir);
+
+// Save global settings (caches last used URLs/models)
+globalSettings.Save();
 
 // Create configuration
 var providerConfig = provider switch

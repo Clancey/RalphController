@@ -38,7 +38,11 @@ public class ConsoleUI : IDisposable
         // Buffer streaming output and emit complete lines
         _controller.OnOutput += text => AddStreamingOutput(text);
         _controller.OnError += line => AddOutputLine(line, isRawOutput: true, isError: true);
-        _controller.OnIterationStart += iter => AddOutputLine($"[blue]>>> Starting iteration {iter}[/]");
+        _controller.OnIterationStart += (iter, modelName) =>
+        {
+            var modelSuffix = modelName != null ? $" [[{Markup.Escape(modelName)}]]" : "";
+            AddOutputLine($"[blue]>>> Starting iteration {iter}{modelSuffix}[/]");
+        };
         _controller.OnIterationComplete += (iter, result) =>
         {
             FlushStreamBuffer(); // Flush any remaining buffered output
@@ -127,6 +131,12 @@ public class ConsoleUI : IDisposable
         var stats = _controller.Statistics;
         var provider = _config.Provider;
 
+        // Get current model name for multi-model mode
+        var currentModel = _controller.ModelSelector.GetCurrentModel();
+        var modelDisplay = (_config.MultiModel?.IsEnabled == true && currentModel != null)
+            ? $" [[{Markup.Escape(currentModel.DisplayName)}]]"
+            : "";
+
         var stateColor = state switch
         {
             LoopState.Running => "green",
@@ -146,7 +156,7 @@ public class ConsoleUI : IDisposable
         table.AddRow(
             $"[bold blue]RALPH CONTROLLER[/]",
             $"[{stateColor}][[{state.ToString().ToUpper()}]][/]",
-            $"[white]Iteration #{stats.CurrentIteration}[/]",
+            $"[white]Iteration #{stats.CurrentIteration}{modelDisplay}[/]",
             $"[dim]{provider}[/]"
         );
 

@@ -446,9 +446,10 @@ if (args.Contains("--single-run"))
         var escaped = line.Replace("[", "[[").Replace("]", "]]");
         AnsiConsole.MarkupLine($"[red]ERR:[/] {escaped}");
     };
-    singleController.OnIterationStart += iter =>
+    singleController.OnIterationStart += (iter, modelName) =>
     {
-        AnsiConsole.MarkupLine($"[blue]>>> Starting iteration {iter}[/]");
+        var modelSuffix = modelName != null ? $" [[{Markup.Escape(modelName)}]]" : "";
+        AnsiConsole.MarkupLine($"[blue]>>> Starting iteration {iter}{modelSuffix}[/]");
     };
     singleController.OnIterationComplete += (iter, result) =>
     {
@@ -1577,9 +1578,10 @@ if (noTui)
     {
         Console.Error.WriteLine($"[ERROR] {line}");
     };
-    consoleController.OnIterationStart += iter =>
+    consoleController.OnIterationStart += (iter, modelName) =>
     {
-        Console.WriteLine($"\n=== Starting iteration {iter} ===");
+        var modelSuffix = modelName != null ? $" [{modelName}]" : "";
+        Console.WriteLine($"\n=== Starting iteration {iter}{modelSuffix} ===");
     };
     consoleController.OnIterationComplete += (iter, result) =>
     {

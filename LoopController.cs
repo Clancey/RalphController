@@ -46,8 +46,8 @@ public class LoopController : IDisposable
     /// <summary>Model selector for multi-model support</summary>
     public ModelSelector ModelSelector => _modelSelector;
 
-    /// <summary>Fired when an iteration starts</summary>
-    public event Action<int>? OnIterationStart;
+    /// <summary>Fired when an iteration starts (iteration number, model name or null)</summary>
+    public event Action<int, string?>? OnIterationStart;
 
     /// <summary>Fired when the model switches (for multi-model mode)</summary>
     public event Action<ModelSpec, string>? OnModelSwitch;
@@ -279,7 +279,13 @@ public class LoopController : IDisposable
     private async Task RunIterationAsync(CancellationToken cancellationToken)
     {
         _statistics.StartIteration();
-        OnIterationStart?.Invoke(_statistics.CurrentIteration);
+
+        // Get current model name for display (before firing event)
+        var currentModel = _modelSelector.GetCurrentModel();
+        var modelName = (_config.MultiModel?.IsEnabled == true && currentModel != null)
+            ? currentModel.DisplayName
+            : null;
+        OnIterationStart?.Invoke(_statistics.CurrentIteration, modelName);
 
         // Get prompt (injected, final verification, or from file)
         string prompt;
@@ -303,19 +309,16 @@ public class LoopController : IDisposable
         }
 
         // Get current provider from ModelSelector (handles multi-model)
+        // Note: currentModel already retrieved above for the iteration header
         var currentProvider = _modelSelector.GetCurrentProvider();
         var currentProviderConfig = _modelSelector.GetCurrentProviderConfig();
-        var currentModel = _modelSelector.GetCurrentModel();
         var isVerification = _modelSelector.IsVerificationIteration;
 
         if (isVerification && currentModel != null)
         {
             OnOutput?.Invoke($"[Verification] Running with {currentModel.DisplayName}...");
         }
-        else if (currentModel != null && _config.MultiModel?.IsEnabled == true)
-        {
-            OnOutput?.Invoke($"[Model: {currentModel.DisplayName}]");
-        }
+        // Note: Model name is now shown in the iteration header, so no need to output here
 
         // Create and run process - use OllamaClient for Ollama provider
         AIResult result;

@@ -19,15 +19,17 @@ public class ResponseAnalyzer
     /// <summary>Number of completion signals to confirm exit</summary>
     public int CompletionSignalThreshold { get; set; } = 2;
 
-    /// <summary>Keywords that indicate completion</summary>
+    /// <summary>Keywords that indicate completion - these should be specific project-level completion signals</summary>
     private static readonly string[] CompletionKeywords =
     [
         "all tasks complete",
-        "project complete",
-        "implementation complete",
+        "all tasks have been completed",
+        "project is complete",
+        "implementation is complete",
         "all items done",
         "nothing left to do",
         "no remaining tasks",
+        "no more tasks",
         "EXIT_SIGNAL: true",
         "RALPH_STATUS.*COMPLETE"
     ];
@@ -134,8 +136,8 @@ public class ResponseAnalyzer
             analysis.RalphStatus?.ExitSignal == true)
             return true;
 
-        // Exit if high confidence
-        if (analysis.ConfidenceScore >= 80)
+        // Exit if high confidence (need explicit signals, not just keywords)
+        if (analysis.ConfidenceScore >= 90)
             return true;
 
         return false;
@@ -184,17 +186,19 @@ public class ResponseAnalyzer
     {
         var score = 0;
 
+        // Single completion signal is not enough - need multiple signals or explicit status
         if (analysis.HasCompletionSignal)
-            score += 40;
+            score += 25;
 
         if (analysis.RalphStatus?.Status == "COMPLETE")
-            score += 30;
+            score += 40;
 
         if (analysis.RalphStatus?.ExitSignal == true)
-            score += 20;
+            score += 30;
 
+        // Multiple consecutive completion signals is a strong indicator
         if (_completionSignalCount >= 2)
-            score += 10;
+            score += 25;
 
         return Math.Min(score, 100);
     }

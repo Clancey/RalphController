@@ -295,7 +295,11 @@ public class LoopController : IDisposable
             _pendingFinalVerification = false;
             _inFinalVerification = true;
             OnFinalVerificationStart?.Invoke();
-            OnOutput?.Invoke("[Final Verification] Verifying all tasks are complete...");
+            OnOutput?.Invoke("");
+            OnOutput?.Invoke("╔══════════════════════════════════════════════════════════════╗");
+            OnOutput?.Invoke("║           FINAL VERIFICATION - Reviewing all tasks           ║");
+            OnOutput?.Invoke("╚══════════════════════════════════════════════════════════════╝");
+            OnOutput?.Invoke("");
             prompt = FinalVerification.GetVerificationPrompt(_config.PlanFilePath);
         }
         else if (_injectedPrompt is not null)
@@ -460,15 +464,21 @@ public class LoopController : IDisposable
                 if (_config.MultiModel?.Strategy == ModelSwitchStrategy.Verification)
                 {
                     _modelSelector.OnCompletionDetected(filesModified);
+                    _responseAnalyzer.Reset(); // Reset to prevent re-triggering during verification
                     OnOutput?.Invoke($"Completion detected: {analysis.ExitReason} - running model verification...");
                     // Don't stop - let next iteration run with verifier
+                    return;
                 }
                 // Check if we need to run final task verification
                 else if (_config.EnableFinalVerification)
                 {
                     _pendingFinalVerification = true;
-                    OnOutput?.Invoke($"Completion detected: {analysis.ExitReason} - running final verification...");
+                    _responseAnalyzer.Reset(); // Reset to prevent re-triggering during verification
+                    OnOutput?.Invoke("");
+                    OnOutput?.Invoke($">>> Completion signal detected: {analysis.ExitReason}");
+                    OnOutput?.Invoke(">>> Scheduling final verification for next iteration...");
                     // Don't stop - let next iteration run verification prompt
+                    return;
                 }
                 else
                 {

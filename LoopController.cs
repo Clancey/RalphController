@@ -242,7 +242,12 @@ public class LoopController : IDisposable
             // Check circuit breaker
             if (_config.EnableCircuitBreaker && !_circuitBreaker.CanExecute())
             {
-                OnError?.Invoke($"Circuit breaker is open: {_circuitBreaker.OpenReason}");
+                OnOutput?.Invoke("");
+                OnOutput?.Invoke("╔══════════════════════════════════════════════════════════════╗");
+                OnOutput?.Invoke("║  CIRCUIT BREAKER OPEN - Loop stopped due to lack of progress ║");
+                OnOutput?.Invoke("╚══════════════════════════════════════════════════════════════╝");
+                OnOutput?.Invoke($"Reason: {_circuitBreaker.OpenReason}");
+                OnOutput?.Invoke("Press Enter to restart, or 'R' to reset and continue.");
                 break;
             }
 
@@ -474,6 +479,7 @@ public class LoopController : IDisposable
                 {
                     _pendingFinalVerification = true;
                     _responseAnalyzer.Reset(); // Reset to prevent re-triggering during verification
+                    _circuitBreaker.Reset(); // Reset circuit breaker - verification won't modify files
                     OnOutput?.Invoke("");
                     OnOutput?.Invoke($">>> Completion signal detected: {analysis.ExitReason}");
                     OnOutput?.Invoke(">>> Scheduling final verification for next iteration...");
@@ -521,8 +527,10 @@ public class LoopController : IDisposable
     {
         try
         {
-            // Use git to count recently modified files
-            var psi = new System.Diagnostics.ProcessStartInfo
+            var count = 0;
+
+            // Count uncommitted changes (staged and unstaged)
+            var statusPsi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "git",
                 Arguments = "status --porcelain",
@@ -532,14 +540,43 @@ public class LoopController : IDisposable
                 CreateNoWindow = true
             };
 
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process is null) return 0;
+            using (var statusProcess = System.Diagnostics.Process.Start(statusPsi))
+            {
+                if (statusProcess is not null)
+                {
+                    var output = statusProcess.StandardOutput.ReadToEnd();
+                    statusProcess.WaitForExit();
+                    count += output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+                }
+            }
 
-            var output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit();
+            // Also check for recent commits (within last 2 minutes) as evidence of progress
+            // This handles the case where AI commits its changes
+            var logPsi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "log --oneline --since='2 minutes ago' --format='%h'",
+                WorkingDirectory = _config.TargetDirectory,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
 
-            // Count lines (each modified file is one line)
-            return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+            using (var logProcess = System.Diagnostics.Process.Start(logPsi))
+            {
+                if (logProcess is not null)
+                {
+                    var logOutput = logProcess.StandardOutput.ReadToEnd();
+                    logProcess.WaitForExit();
+                    var recentCommits = logOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+                    if (recentCommits > 0)
+                    {
+                        count += recentCommits;
+                    }
+                }
+            }
+
+            return count;
         }
         catch
         {

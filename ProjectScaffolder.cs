@@ -204,6 +204,13 @@ public class ProjectScaffolder
                     CRITICAL: This is an OPERATIONAL GUIDE for how the AI agent should operate.
                     It defines subagents, rules, and workflows - NOT project documentation.
 
+                    VERIFICATION WORKFLOW - CRITICAL:
+                    This project uses a verification system where one agent does work and another verifies it.
+                    Tasks have THREE states:
+                    - `[ ]` - Incomplete (not started or needs rework)
+                    - `[?]` - Waiting verification (work done, needs different agent to verify)
+                    - `[x]` - Complete (verified by a second agent)
+
                     YOUR OUTPUT MUST START EXACTLY LIKE THIS:
                     ```
                     # Agent Configuration
@@ -217,12 +224,15 @@ public class ProjectScaffolder
                     1. Core Principle - explain scheduler pattern
                     2. Agent Architecture - ASCII diagram showing Primary Agent and Subagents
                     3. Subagent Types - define Explore, Implement, Build/Test agents
-                    4. Agent Rules - numbered list of operational rules
-                    5. Task Selection Algorithm - how to pick next task
+                    4. Agent Rules - numbered list including verification rules:
+                       - Mark completed work as `[?]` not `[x]`
+                       - Verify `[?]` tasks before starting new work
+                       - Never self-verify (can't mark own work `[x]`)
+                    5. Task Selection Algorithm - prioritize `[?]` verification first, then `[ ]` tasks
                     6. Build Commands - actual commands for this project
                     7. Error Handling - what to do when things fail
 
-                    DO NOT output JSON. DO NOT output the project spec..
+                    DO NOT output JSON. DO NOT output the project spec.
                     """;
             }
             else if (fileName == "prompt.md")
@@ -230,26 +240,42 @@ public class ProjectScaffolder
                 systemPrompt = """
                     You are creating a prompt.md file for an autonomous AI coding agent.
 
-                    CRITICAL: This is NOT a spec or documentation. It's a SHORT instruction file (under 300 words).
+                    CRITICAL: This is NOT a spec or documentation. It's a SHORT instruction file (under 400 words).
                     The prompt tells the AI what to do EACH LOOP ITERATION.
+
+                    VERIFICATION WORKFLOW - CRITICAL:
+                    This project uses a verification system where one agent does work and another verifies it.
+                    Tasks have THREE states:
+                    - `[ ]` - Incomplete (not started or needs rework)
+                    - `[?]` - Waiting verification (work done, needs different agent to verify)
+                    - `[x]` - Complete (verified by a second agent)
 
                     YOUR OUTPUT MUST START EXACTLY LIKE THIS:
                     ```
+                    ## Task Status & Transitions
+                    - `[ ]` - Incomplete: not started or needs rework
+                    - `[?]` - Waiting verification: work done, needs different agent to verify
+                    - `[x]` - Complete: verified by a second agent
+
                     ## Context Loading
                     1. Read agents.md for project context
                     2. Read specs/* for requirements
                     3. Read implementation_plan.md for progress
 
-                    ## Task Execution
-                    Choose the most important incomplete task (High Priority first).
-                    Implement ONE thing.
+                    ## Task Selection (IN THIS ORDER)
+                    1. FIRST: Look for any `[?]` tasks - verify these before doing new work
+                    2. SECOND: If no `[?]` tasks, take the first `[ ]` task from High Priority
                     ```
 
-                    Include sections for: Context Loading, Task Execution, Git Commits, Error Handling, Rules.
+                    REQUIRED RULES TO INCLUDE:
+                    - When completing YOUR work: mark `[ ]` → `[?]` (NEVER directly to `[x]`)
+                    - When verifying ANOTHER agent's work: mark `[?]` → `[x]` if good, or `[?]` → `[ ]` if bad
+                    - NEVER mark your own work as `[x]` complete
+
+                    Include sections for: Task Status, Context Loading, Task Selection, Git Commits, Rules.
 
                     DO NOT output JSON. DO NOT output the project spec.
-                    just output the prompt.md file content.
-                    The prompt.md you create may instruct the agent to output status, but YOU should not output status.
+                    Just output the prompt.md file content.
                     """;
             }
             else if (fileName == "implementation_plan.md")
@@ -257,20 +283,44 @@ public class ProjectScaffolder
                 systemPrompt = """
                     You are creating an implementation_plan.md task list for an autonomous AI agent.
 
+                    VERIFICATION WORKFLOW - CRITICAL:
+                    This project uses a verification system where one agent does work and another verifies it.
+                    Tasks have THREE states:
+                    - `[ ]` - Incomplete (not started or needs rework)
+                    - `[?]` - Waiting verification (work done, needs different agent to verify)
+                    - `[x]` - Complete (verified by a second agent)
+
                     YOUR OUTPUT MUST START EXACTLY LIKE THIS:
                     ```
                     # Implementation Plan
 
-                    ## Completed
+                    ## Status Legend
+                    - `[ ]` - Incomplete (not started or needs rework)
+                    - `[?]` - Waiting to be verified (work done, needs verification by different agent)
+                    - `[x]` - Complete (verified by a second agent)
+
+                    ---
+
+                    ## Verified Complete
                     - [x] Project initialized
+
+                    ## Waiting Verification
+                    <!-- Tasks marked [?] appear here after an agent completes them -->
 
                     ## High Priority
                     - [ ] First critical task
                     ```
 
+                    REQUIRED SECTIONS (in order):
+                    1. Status Legend - explains the three task states
+                    2. Verified Complete - tasks verified by a second agent
+                    3. Waiting Verification - tasks done but need verification
+                    4. High Priority - critical incomplete tasks
+                    5. Medium Priority - important incomplete tasks
+                    6. Low Priority - nice-to-have tasks
+
                     Create tasks based on the project requirements. Use markdown checkboxes.
                     DO NOT output JSON. Output ONLY the markdown task list.
-                    just output the file content directly.
                     """;
             }
             else if (fileName.EndsWith(".md"))
@@ -681,43 +731,61 @@ public class ProjectScaffolder
         """;
 
     private static string GetDefaultPromptMd() => """
+        ## Task Status & Transitions
+        ```
+        [ ] Incomplete ──(you implement)──► [?] Waiting Verification
+        [?] Waiting    ──(next agent verifies)──► [x] Complete
+        [?] Waiting    ──(verification fails)──► [ ] Incomplete (with note)
+        ```
+        - `[ ]` - Incomplete: not started or needs rework
+        - `[?]` - Waiting verification: work done, needs different agent to verify
+        - `[x]` - Complete: verified by a second agent
+
         ## Context Loading
         1. Read agents.md for project context and build commands
         2. Read specs/* for requirements
         3. Read implementation_plan.md for current progress
 
-        ## Task Execution
-        1. Choose the FIRST incomplete High Priority task
-        2. Implement ONE thing completely
-        3. Run tests/build to verify
-        4. Update implementation_plan.md (mark complete, add notes)
+        ## Task Selection (IN THIS ORDER)
+        1. **FIRST**: Look for any `[?]` tasks - verify these before doing new work
+        2. **SECOND**: If no `[?]` tasks, take the first `[ ]` task from High Priority
+
+        ## When You Find a `[?]` Task:
+        1. Review the implementation thoroughly
+        2. Check code exists, compiles, meets requirements
+        3. Run relevant tests
+        4. **If GOOD**: Change `[?]` to `[x]` and move to Verified Complete section
+        5. **If BAD**: Change `[?]` back to `[ ]` with a note explaining what's missing
+
+        ## When You Find a `[ ]` Task:
+        1. Implement the task completely
+        2. Run tests/build to verify your work
+        3. Change `[ ]` to `[?]` (NEVER directly to `[x]`)
+        4. Commit your work
+
+        ## Allowed Transitions
+        - `[ ]` → `[?]` : You completed implementation (only valid transition for your own work)
+        - `[?]` → `[x]` : You verified ANOTHER agent's work passed
+        - `[?]` → `[ ]` : You verified another agent's work and it failed
+
+        ## NOT Allowed
+        - `[ ]` → `[x]` : NEVER skip verification
+        - Marking your own work `[x]` : NEVER self-verify
 
         ## Git Commits - MANDATORY
         After EVERY successful change:
         ```bash
         git add -A && git commit -m "Description of change"
         ```
-        DO NOT skip commits. Commit before moving to next task.
 
         ## Error Handling
-        - If file not found: use list_directory or glob to find it
-        - If command fails: try different approach, don't repeat same error
         - If stuck after 3 attempts: mark task as blocked, move on
-
-        ## Rules
-        - Search before implementing (don't assume not implemented)
-        - Read files before editing
-        - One task per iteration
-        - No placeholders or TODOs - complete implementations only
 
         ## Status Reporting
         End response with:
         ```
         ---RALPH_STATUS---
         STATUS: IN_PROGRESS | COMPLETE | BLOCKED
-        TASKS_COMPLETED: <number>
-        FILES_MODIFIED: <number>
-        TESTS_PASSED: true | false
         EXIT_SIGNAL: true | false
         NEXT_STEP: <what to do next>
         ---END_STATUS---
@@ -727,8 +795,18 @@ public class ProjectScaffolder
     private static string GetDefaultImplementationPlan() => """
         # Implementation Plan
 
-        ## Completed
+        ## Status Legend
+        - `[ ]` - Incomplete (not started or needs rework)
+        - `[?]` - Waiting to be verified (work done, needs verification by different agent)
+        - `[x]` - Complete (verified by a second agent)
+
+        ---
+
+        ## Verified Complete
         - [x] Project initialized
+
+        ## Waiting Verification
+        <!-- Tasks marked [?] will appear here after an agent completes them -->
 
         ## High Priority
         - [ ] Set up project structure and build system
@@ -752,5 +830,7 @@ public class ProjectScaffolder
         ## Notes
         - Focus on MVP first, then iterate
         - Test each component before moving on
+        - When completing a task, mark as `[?]` for verification
+        - Only mark `[x]` when verifying another agent's work
         """;
 }

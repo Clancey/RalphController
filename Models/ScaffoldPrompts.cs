@@ -162,21 +162,37 @@ public static class ScaffoldPrompts
 
         Create a prompt.md file - the main instruction file for the Ralph loop.
 
-        This prompt is read every iteration. It should be CONCISE (under 300 words is ideal).
+        This prompt is read every iteration. It should be CONCISE (under 400 words is ideal).
         Less is more - a simple prompt outperforms a complex one.
 
         The prompt MUST include these sections:
+
+        ## Task Status Legend
+        Include this legend at the top:
+        - `[ ]` - Incomplete (not started or needs rework)
+        - `[?]` - Waiting to be verified (work done, needs verification by different agent)
+        - `[x]` - Complete (verified by a second agent)
 
         ## Context Loading
         - Read agents.md for project context and build commands
         - Read specs/* for requirements
         - Read implementation_plan.md for progress
 
-        ## Task Execution
-        - Choose FIRST incomplete High Priority task
+        ## Task Execution - VERIFICATION FIRST
+        Include TWO subsections:
+
+        ### If you see a `[?]` task (Waiting Verification):
+        - PRIORITY: Verify these FIRST before starting new work
+        - Review the implementation, check code exists, compiles, meets requirements
+        - Run tests
+        - If VERIFIED: Mark as `[x]` and commit
+        - If INCOMPLETE: Mark as `[ ]` with a note explaining what's missing
+
+        ### If no `[?]` tasks exist:
+        - Choose FIRST incomplete `[ ]` High Priority task
         - Implement ONE thing completely
-        - Run tests/build to verify
-        - Update implementation_plan.md
+        - When done, mark as `[?]` (NOT `[x]`) - another agent must verify
+        - Commit your work
 
         ## Git Commits - MANDATORY
         Include this exact instruction:
@@ -193,6 +209,8 @@ public static class ScaffoldPrompts
         - Read files before editing
         - One task per iteration
         - No placeholders or TODOs
+        - **NEVER mark your own work as `[x]` complete - only mark as `[?]` for verification**
+        - **Only mark tasks `[x]` when verifying ANOTHER agent's `[?]` work**
 
         CRITICAL - Status reporting requirement:
         Every response MUST end with a RALPH_STATUS block in this exact format:
@@ -208,7 +226,7 @@ public static class ScaffoldPrompts
         ```
 
         EXIT_SIGNAL should be true ONLY when:
-        - All items in implementation_plan.md are complete
+        - All items in implementation_plan.md are `[x]` complete (verified)
         - All tests pass
         - No errors exist
         - Specifications are fully implemented
@@ -232,18 +250,25 @@ public static class ScaffoldPrompts
 
         Create an implementation_plan.md file - the TODO list for the project.
 
-        This file tracks work across THREE priority levels:
-        - HIGH PRIORITY: Foundation work, blocking items, critical path
-        - MEDIUM PRIORITY: Core features, quality improvements, important functionality
-        - LOW PRIORITY: Nice-to-haves, optimizations, polish
+        This file uses a VERIFICATION WORKFLOW where one agent does work and another verifies it.
 
         Use this exact structure:
 
         ```markdown
         # Implementation Plan
 
-        ## Completed
+        ## Status Legend
+        - `[ ]` - Incomplete (not started or needs rework)
+        - `[?]` - Waiting to be verified (work done, needs verification by different agent)
+        - `[x]` - Complete (verified by a second agent)
+
+        ---
+
+        ## Verified Complete
         - [x] Project initialized
+
+        ## Waiting Verification
+        (Tasks here have been implemented but need another agent to verify)
 
         ## High Priority
         - [ ] Critical/blocking task
@@ -268,14 +293,17 @@ public static class ScaffoldPrompts
         1. Read specs/* to understand all requirements
         2. Create tasks that map to spec requirements
         3. Start fresh - do NOT preserve old completed items
-        4. The Completed section should only contain "Project initialized"
-        5. All spec requirements should appear as incomplete tasks in the appropriate priority
+        4. The Verified Complete section should only contain "Project initialized"
+        5. The Waiting Verification section should be empty initially
+        6. All spec requirements should appear as incomplete `[ ]` tasks
 
-        The agent updates this file every iteration to:
-        - Mark completed items with [x]
-        - Move items between priority levels as needed
-        - Add new items discovered during work
-        - Note blockers or issues
+        VERIFICATION WORKFLOW:
+        - When an agent completes work, they mark it `[?]` (waiting verification)
+        - The NEXT agent iteration verifies the work
+        - If verified good: mark `[x]` and move to Verified Complete
+        - If not complete: mark `[ ]` with a note and leave in priority section
+
+        This ensures no single agent can claim their own work is complete.
 
         Keep items brief - one line each. This file is the agent's memory across iterations.
 

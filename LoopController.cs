@@ -24,6 +24,7 @@ public class LoopController : IDisposable
     private string? _providerRateLimitMessage;
     private bool _pendingFinalVerification;
     private bool _inFinalVerification;
+    private bool _circuitBreakerVerificationDone;
 
     /// <summary>Current state of the loop</summary>
     public LoopState State { get; private set; } = LoopState.Idle;
@@ -122,6 +123,7 @@ public class LoopController : IDisposable
         _modelSelector.Reset();
         _pendingFinalVerification = false;
         _inFinalVerification = false;
+        _circuitBreakerVerificationDone = false;
 
         try
         {
@@ -253,6 +255,22 @@ public class LoopController : IDisposable
             // Check circuit breaker
             if (_config.EnableCircuitBreaker && !_circuitBreaker.CanExecute())
             {
+                // If final verification is enabled and we haven't run it yet, run it before stopping
+                if (_config.EnableFinalVerification && !_circuitBreakerVerificationDone && !_pendingFinalVerification && !_inFinalVerification)
+                {
+                    OnOutput?.Invoke("");
+                    OnOutput?.Invoke("╔══════════════════════════════════════════════════════════════╗");
+                    OnOutput?.Invoke("║  CIRCUIT BREAKER - No progress, running final verification   ║");
+                    OnOutput?.Invoke("╚══════════════════════════════════════════════════════════════╝");
+                    OnOutput?.Invoke($"Reason: {_circuitBreaker.OpenReason}");
+                    OnOutput?.Invoke("Running final verification before stopping...");
+                    _pendingFinalVerification = true;
+                    _circuitBreakerVerificationDone = true; // Mark that we've triggered verification
+                    _circuitBreaker.Reset(); // Reset to allow verification iteration to run
+                    continue; // Continue to run the verification iteration
+                }
+
+                // Circuit breaker triggered after verification or verification disabled
                 OnOutput?.Invoke("");
                 OnOutput?.Invoke("╔══════════════════════════════════════════════════════════════╗");
                 OnOutput?.Invoke("║  CIRCUIT BREAKER OPEN - Loop stopped due to lack of progress ║");
@@ -526,6 +544,13 @@ public class LoopController : IDisposable
             var analysis = _responseAnalyzer.Analyze(result);
             OnOutput?.Invoke($"[Analysis] ShouldExit={analysis.ShouldExit}, Confidence={analysis.ConfidenceScore}, Signal={analysis.HasCompletionSignal}");
 
+            // Reset circuit breaker if we detect any completion signal (to allow time for signal threshold)
+            if (analysis.HasCompletionSignal && _config.EnableCircuitBreaker)
+            {
+                _circuitBreaker.Reset();
+                OnOutput?.Invoke("[Analysis] Completion signal detected - circuit breaker reset");
+            }
+
             if (analysis.ShouldExit && _config.AutoExitOnCompletion)
             {
                 OnOutput?.Invoke($"[Analysis] Exit triggered: {analysis.ExitReason}");
@@ -570,20 +595,35 @@ public class LoopController : IDisposable
             // Notify model selector for fallback strategy
             _modelSelector.OnIterationFailed(isRateLimit: true);
 
-            var resetAt = rateLimitInfo.ResetAt ?? DateTimeOffset.UtcNow.AddMinutes(30);
-            _providerRateLimitUntil = resetAt;
-            _providerRateLimitMessage = rateLimitInfo.Message;
-
-            var localReset = resetAt.ToLocalTime();
-            var resetText = rateLimitInfo.ResetAt.HasValue
-                ? $"{localReset:MMM d h:mm tt}"
-                : $"{localReset:MMM d h:mm tt} (fallback)";
-
-            var message = string.IsNullOrWhiteSpace(_providerRateLimitMessage)
+            var providerName = currentModel?.DisplayName ?? currentProvider.ToString();
+            var message = string.IsNullOrWhiteSpace(rateLimitInfo.Message)
                 ? "Provider rate limit detected"
-                : $"Provider rate limit detected: {_providerRateLimitMessage}";
+                : $"Provider rate limit detected: {rateLimitInfo.Message}";
 
-            OnOutput?.Invoke($"{message}. Waiting until {resetText}.");
+            // In multi-model mode, skip to next model instead of waiting
+            if (_config.MultiModel?.IsEnabled == true)
+            {
+                OnOutput?.Invoke("");
+                OnOutput?.Invoke($"[Rate Limit] {providerName}: {message}");
+                OnOutput?.Invoke("[Rate Limit] Rotating to next model...");
+                OnOutput?.Invoke("");
+                _modelSelector.AfterIteration(0); // Rotate to next model
+                // Don't set _providerRateLimitUntil - continue immediately with next model
+            }
+            else
+            {
+                // Single model mode - wait for rate limit reset
+                var resetAt = rateLimitInfo.ResetAt ?? DateTimeOffset.UtcNow.AddMinutes(30);
+                _providerRateLimitUntil = resetAt;
+                _providerRateLimitMessage = rateLimitInfo.Message;
+
+                var localReset = resetAt.ToLocalTime();
+                var resetText = rateLimitInfo.ResetAt.HasValue
+                    ? $"{localReset:MMM d h:mm tt}"
+                    : $"{localReset:MMM d h:mm tt} (fallback)";
+
+                OnOutput?.Invoke($"{message}. Waiting until {resetText}.");
+            }
         }
         else if (!result.Success)
         {
@@ -600,11 +640,21 @@ public class LoopController : IDisposable
                     OnOutput?.Invoke($"[Warning] {firstErrorLine}");
                 }
             }
-            OnOutput?.Invoke("[Warning] Moving to next iteration...");
-            OnOutput?.Invoke("");
 
             // Notify model selector for fallback strategy on failures
             _modelSelector.OnIterationFailed(isRateLimit: false);
+
+            // In multi-model mode, rotate to next model
+            if (_config.MultiModel?.IsEnabled == true)
+            {
+                OnOutput?.Invoke("[Warning] Rotating to next model...");
+                _modelSelector.AfterIteration(0);
+            }
+            else
+            {
+                OnOutput?.Invoke("[Warning] Moving to next iteration...");
+            }
+            OnOutput?.Invoke("");
         }
     }
 
@@ -693,6 +743,15 @@ public class LoopController : IDisposable
     {
         if (!_providerRateLimitUntil.HasValue)
             return false;
+
+        // In multi-model mode, don't wait - just clear the limit and continue with next model
+        if (_config.MultiModel?.IsEnabled == true)
+        {
+            OnOutput?.Invoke("[Rate Limit] Skipping wait in multi-model mode, continuing with next model...");
+            _providerRateLimitUntil = null;
+            _providerRateLimitMessage = null;
+            return false;
+        }
 
         var until = _providerRateLimitUntil.Value;
         var now = DateTimeOffset.UtcNow;

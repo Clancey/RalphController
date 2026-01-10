@@ -22,14 +22,29 @@ public class ResponseAnalyzer
     /// <summary>Keywords that indicate completion - these should be specific project-level completion signals</summary>
     private static readonly string[] CompletionKeywords =
     [
+        // Explicit completion phrases
         "all tasks complete",
         "all tasks have been completed",
+        "all tasks are complete",
         "project is complete",
         "implementation is complete",
         "all items done",
         "nothing left to do",
+        // Task tracking signals
         "no remaining tasks",
         "no more tasks",
+        "no remaining unchecked",
+        "no unchecked tasks",
+        "no incomplete tasks",
+        "all tasks.*checked",
+        "all items.*checked",
+        // Prompts for new work (indicates current work is done)
+        "please add a new task",
+        "add a new task to",
+        "add new tasks",
+        "waiting for.*new.*task",
+        "ready for.*next.*task",
+        // RALPH status signals
         "EXIT_SIGNAL: true",
         "RALPH_STATUS.*COMPLETE"
     ];
@@ -290,7 +305,7 @@ public class ResponseAnalyzer
     }
 
     private static readonly Regex RateLimitRegex = new(
-        @"\b(hit|reached)\s+(your\s+)?limit\b|\brate\s+limit\b|\bquota\s+exceeded\b",
+        @"\b(hit|reached)\s+(your\s+)?limit\b|\brate\s+limit\b|\bquota\s+exceeded\b|\b(have\s+)?no\s+quota\b|\b402\b.*quota",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex ResetAtRegex = new(

@@ -1,6 +1,6 @@
 # RalphController
 
-A .NET console application that implements the "Ralph Wiggum" autonomous AI coding agent loop pattern. This tool monitors and controls Claude CLI (or OpenAI Codex) running in a continuous loop to autonomously implement features, fix bugs, and manage codebases.
+A .NET console application that implements the "Ralph Wiggum" autonomous AI coding agent loop pattern. This tool monitors and controls AI CLI tools running in a continuous loop to autonomously implement features, fix bugs, and manage codebases.
 
 Point it at an empty directory with a project description, and watch it build your entire application from scratch. Or use it on an existing codebase to autonomously fix bugs and add features.
 
@@ -20,8 +20,10 @@ RalphController automates the Ralph Wiggum technique:
 - **Live Streaming**: See AI output as it's generated, not just after completion
 - **Project Scaffolding**: Generate all project files from a description or spec file
 - **Re-initialization**: Use `--init` to regenerate project files with new requirements
-- **Multi-Provider**: Supports Claude, Codex, GitHub Copilot, OpenCode, and Ollama
-- **Multi-Model**: Rotate between models or use verification model for completion checking
+- **Multi-Provider**: Supports Claude, Codex, GitHub Copilot, Gemini, Cursor, OpenCode, and Ollama/LMStudio
+- **Provider Detection**: Automatically detects which AI CLIs are installed and only offers those
+- **Multi-Model**: Rotate between multiple models or use verification model for completion checking
+- **Final Verification**: Before completing, verifies all tasks are truly done
 - **Provider Persistence**: Remembers your provider choice per project in `.ralph.json`
 - **Global Tool**: Install as `ralph` command, run from any directory
 - **Pause/Resume/Stop**: Full control over the loop execution
@@ -111,7 +113,10 @@ dotnet run -- /path/to/your/project
   - Claude CLI (`claude`) - [Anthropic](https://docs.anthropic.com/claude/docs/claude-cli)
   - Codex CLI (`codex`) - [OpenAI](https://github.com/openai/codex-cli)
   - Copilot CLI (`copilot`) - [GitHub](https://github.com/github/copilot-cli)
+  - Gemini CLI (`gemini`) - [Google](https://github.com/google/gemini-cli)
+  - Cursor CLI (`cursor`) - [Cursor](https://cursor.sh)
   - OpenCode CLI (`opencode`) - [OpenCode](https://opencode.ai/docs/cli/)
+  - Ollama/LMStudio (via HTTP API) - No CLI needed
 - Terminal with ANSI color support
 
 ## Usage
@@ -129,13 +134,20 @@ ralph /path/to/project
 ralph --claude              # Anthropic Claude
 ralph --codex               # OpenAI Codex
 ralph --copilot             # GitHub Copilot
+ralph --gemini              # Google Gemini
+ralph --cursor              # Cursor AI
 ralph --opencode            # OpenCode
+ralph --ollama              # Ollama/LMStudio
 
 # Or use --provider flag
 ralph --provider copilot
-ralph --provider opencode
+ralph --provider gemini
+ralph --provider cursor
 
-# Specify a model (Copilot or OpenCode)
+# Specify a model
+ralph --claude --model opus
+ralph --gemini --model gemini-2.5-flash
+ralph --cursor --model gpt-4o
 ralph --copilot --model gpt-5.1
 
 # Specify a model for OpenCode (provider/model)
@@ -152,6 +164,19 @@ ralph --list-models
 # Ignore saved settings from .ralph.json
 ralph --fresh
 
+```
+
+### Provider Detection
+
+Ralph automatically detects which AI providers are installed on your system. When you run `ralph` without specifying a provider, it will only show providers that are actually available:
+
+```bash
+# If you have claude, codex, and gemini installed:
+ralph
+# Shows: Claude, Codex, Gemini, Ollama (always available)
+
+# Providers are detected using 'which' command
+# Ollama is always shown since it uses HTTP API
 ```
 
 ### Provider Persistence
@@ -289,7 +314,7 @@ When you point RalphController at a directory missing required files, you'll be 
 3. **Continue anyway** - Skip scaffolding (requires at least `prompt.md`)
 4. **Exit** - Cancel
 
-> **⚠️ Important: Code-focused models (like qwen-coder, deepseek-coder, codellama) often fail at scaffolding because they don't follow meta-instructions well. They tend to echo the spec content instead of generating proper Ralph files.**
+> **Warning: Code-focused models (like qwen-coder, deepseek-coder, codellama) often fail at scaffolding because they don't follow meta-instructions well. They tend to echo the spec content instead of generating proper Ralph files.**
 >
 > **Recommended approach:**
 > - Use **"Create default template files"** option, then manually customize them
@@ -358,6 +383,7 @@ RalphController uses sensible defaults but can be customized:
 | Circuit Breaker | Enabled | Detect and stop on stagnation |
 | Response Analyzer | Enabled | Detect completion signals |
 | Auto Exit | Enabled | Exit when completion detected |
+| Final Verification | Enabled | Verify all tasks before stopping |
 | Multi-Model | Disabled | See Multi-Model Support section |
 
 ## Safety Features
@@ -381,6 +407,35 @@ Detects when work is complete:
 - Detects test-only loops (stuck running tests without implementation)
 - Auto-exits when confidence is high
 
+### Final Verification
+
+When the AI signals completion, Ralph runs a final verification step:
+
+1. **Verification Prompt**: Ralph injects a special prompt asking the AI to review each task
+2. **Task Review**: The AI verifies each item in `implementation_plan.md` is truly complete
+3. **Structured Response**: AI reports findings in a structured format:
+
+```
+---VERIFICATION_RESULT---
+OVERALL_STATUS: COMPLETE or INCOMPLETE
+
+COMPLETED_TASKS:
+- Task 1 that is done
+- Task 2 that is done
+
+INCOMPLETE_TASKS:
+- Task that still needs work: What's missing
+
+SUMMARY: Brief summary of findings
+---END_VERIFICATION---
+```
+
+4. **Decision**:
+   - If all tasks complete → Ralph stops
+   - If any tasks incomplete → Ralph continues iterating with the standard prompt
+
+This prevents premature completion by ensuring all work is actually done before stopping.
+
 ### RALPH_STATUS Block
 The AI should end each response with:
 ```
@@ -396,7 +451,7 @@ NEXT_STEP: <what to do next>
 
 ## Multi-Model Support
 
-RalphController supports running multiple AI models in a single session with two strategies:
+RalphController supports running multiple AI models in a single session with several strategies:
 
 ### Model Rotation (Round Robin)
 
@@ -404,6 +459,8 @@ Cycle through different models each iteration. Useful for:
 - Cost optimization (alternate expensive/cheap models)
 - Different perspectives on problem-solving
 - Avoiding model-specific blind spots
+
+You can add **as many models as you want** to the rotation. During setup, Ralph will keep asking "Add another model to the rotation?" until you say no.
 
 ### Verification Mode
 
@@ -422,21 +479,39 @@ Multi-model configuration:
   Round-robin rotation - alternate between models each iteration
 ```
 
-Select a strategy and then choose your secondary model from any supported provider.
+For round-robin, you can add multiple models:
+
+```
+Add model #2 for rotation:
+  Model 2 - Select provider: Claude
+  Select Claude model: opus
+
+Add another model to the rotation? [y/n]: y
+
+Add model #3 for rotation:
+  Model 3 - Select provider: Gemini
+  Select Gemini model: gemini-2.5-pro
+
+Add another model to the rotation? [y/n]: n
+
+Multi-model: RoundRobin - sonnet → opus → gemini-2.5-pro
+```
 
 ### Manual Configuration
 
 You can also configure multi-model directly in your `.ralph.json`:
 
-**Round Robin (Opus ↔ Sonnet):**
+**Round Robin (Multiple Models):**
 ```json
 {
   "multiModel": {
     "strategy": "RoundRobin",
     "rotateEveryN": 1,
     "models": [
+      { "provider": "Claude", "model": "sonnet", "label": "Sonnet" },
       { "provider": "Claude", "model": "opus", "label": "Opus" },
-      { "provider": "Claude", "model": "sonnet", "label": "Sonnet" }
+      { "provider": "Gemini", "model": "gemini-2.5-pro", "label": "Gemini Pro" },
+      { "provider": "Cursor", "model": "gpt-4o", "label": "Cursor GPT-4o" }
     ]
   }
 }
@@ -460,13 +535,14 @@ You can also configure multi-model directly in your `.ralph.json`:
 }
 ```
 
-**Cross-Provider (Claude + Ollama):**
+**Cross-Provider (Claude + Gemini + Ollama):**
 ```json
 {
   "multiModel": {
     "strategy": "RoundRobin",
     "models": [
       { "provider": "Claude", "model": "sonnet" },
+      { "provider": "Gemini", "model": "gemini-2.5-flash" },
       { "provider": "Ollama", "model": "qwen2.5-coder:32b", "baseUrl": "http://localhost:11434" }
     ]
   }
@@ -490,7 +566,7 @@ You can also configure multi-model directly in your `.ralph.json`:
 | `EveryNIterations` | Run verification every N iterations |
 | `Manual` | User-triggered (future feature) |
 
-### How Verification Works
+### How Model Verification Works
 
 1. Primary model runs normally
 2. When completion is detected, verification model runs the **same prompt**
@@ -515,6 +591,10 @@ dotnet run -- --test-aiprocess
 
 # Test process output capture
 dotnet run -- --test-output
+
+# Run without TUI (console mode)
+ralph --no-tui
+ralph --console
 ```
 
 ## Streaming Output
@@ -522,6 +602,7 @@ dotnet run -- --test-output
 RalphController streams AI output in real-time:
 
 - **Claude**: Uses `--output-format stream-json` to parse streaming events
+- **Gemini**: Uses `-o stream-json` for streaming
 - **Codex**: Native streaming via stdout
 
 Output is buffered line-by-line to prevent split words while maintaining real-time feedback.

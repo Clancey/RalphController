@@ -621,7 +621,40 @@ public class LoopController : IDisposable
             OnOutput?.Invoke("[Analysis] Response analyzer disabled");
         }
 
-        // Handle rate limits with fallback
+        // Handle failed iterations FIRST (before rate limit check)
+        // This ensures we always rotate on failure even if rate limit isn't detected
+        if (!result.Success)
+        {
+            var providerName = currentModel?.DisplayName ?? currentProvider.ToString();
+            OnOutput?.Invoke("");
+            OnOutput?.Invoke("╔══════════════════════════════════════════════════════════════╗");
+            OnOutput?.Invoke($"║  MODEL FAILED: {providerName,-44} ║");
+            OnOutput?.Invoke("╚══════════════════════════════════════════════════════════════╝");
+            OnOutput?.Invoke($"Exit code: {result.ExitCode}");
+            if (!string.IsNullOrWhiteSpace(result.Error))
+            {
+                // Show first few lines of error
+                var errorLines = result.Error.Split('\n').Where(l => !string.IsNullOrWhiteSpace(l)).Take(3);
+                foreach (var line in errorLines)
+                {
+                    OnOutput?.Invoke($"Error: {line}");
+                }
+            }
+
+            // Notify model selector for fallback strategy on failures
+            _modelSelector.OnIterationFailed(isRateLimit: false);
+
+            // In multi-model mode, rotate to next model
+            if (_config.MultiModel?.IsEnabled == true)
+            {
+                _modelSelector.AfterIteration(0);
+                OnOutput?.Invoke("[Rotating to next model...]");
+            }
+            OnOutput?.Invoke("");
+            return; // Continue to next iteration
+        }
+
+        // Handle rate limits (in case result.Success is true but there's a rate limit message in output)
         var rateLimitInfo = ResponseAnalyzer.TryDetectRateLimit(result);
         if (rateLimitInfo is not null)
         {
@@ -641,7 +674,6 @@ public class LoopController : IDisposable
                 OnOutput?.Invoke("[Rate Limit] Rotating to next model...");
                 OnOutput?.Invoke("");
                 _modelSelector.AfterIteration(0); // Rotate to next model
-                // Don't set _providerRateLimitUntil - continue immediately with next model
             }
             else
             {
@@ -657,37 +689,6 @@ public class LoopController : IDisposable
 
                 OnOutput?.Invoke($"{message}. Waiting until {resetText}.");
             }
-        }
-        else if (!result.Success)
-        {
-            // Agent returned non-zero exit code - log warning and continue
-            var providerName = currentModel?.DisplayName ?? currentProvider.ToString();
-            OnOutput?.Invoke("");
-            OnOutput?.Invoke($"[Warning] {providerName} exited with code {result.ExitCode}");
-            if (!string.IsNullOrWhiteSpace(result.Error))
-            {
-                // Show first line of error only to avoid spam
-                var firstErrorLine = result.Error.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
-                if (firstErrorLine != null)
-                {
-                    OnOutput?.Invoke($"[Warning] {firstErrorLine}");
-                }
-            }
-
-            // Notify model selector for fallback strategy on failures
-            _modelSelector.OnIterationFailed(isRateLimit: false);
-
-            // In multi-model mode, rotate to next model
-            if (_config.MultiModel?.IsEnabled == true)
-            {
-                OnOutput?.Invoke("[Warning] Rotating to next model...");
-                _modelSelector.AfterIteration(0);
-            }
-            else
-            {
-                OnOutput?.Invoke("[Warning] Moving to next iteration...");
-            }
-            OnOutput?.Invoke("");
         }
     }
 

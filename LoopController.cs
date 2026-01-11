@@ -299,10 +299,43 @@ public class LoopController : IDisposable
                 continue;
             }
 
-            // Run an iteration
-            OnOutput?.Invoke($"[Loop] Running iteration {_statistics.CurrentIteration + 1}...");
-            await RunIterationAsync(cancellationToken);
-            OnOutput?.Invoke($"[Loop] Iteration {_statistics.CurrentIteration} completed, State={State}");
+            // Run an iteration - wrapped in try/catch so unexpected errors don't kill the loop
+            try
+            {
+                OnOutput?.Invoke($"[Loop] Running iteration {_statistics.CurrentIteration + 1}...");
+                await RunIterationAsync(cancellationToken);
+                OnOutput?.Invoke($"[Loop] Iteration {_statistics.CurrentIteration} completed, State={State}");
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancellation is expected - re-throw to exit the loop
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Unexpected error in iteration - log and continue to next iteration
+                OnError?.Invoke($"[Loop Error] Iteration failed unexpectedly: {ex.Message}");
+                OnOutput?.Invoke("");
+                OnOutput?.Invoke("╔══════════════════════════════════════════════════════════════╗");
+                OnOutput?.Invoke("║  ITERATION FAILED - Recovering and continuing                ║");
+                OnOutput?.Invoke("╚══════════════════════════════════════════════════════════════╝");
+                OnOutput?.Invoke($"Error: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    OnOutput?.Invoke($"Inner: {ex.InnerException.Message}");
+                }
+                OnOutput?.Invoke("");
+
+                // In multi-model mode, rotate to next model
+                if (_config.MultiModel?.IsEnabled == true)
+                {
+                    _modelSelector.AfterIteration(0);
+                    OnOutput?.Invoke("[Loop] Rotating to next model and continuing...");
+                }
+
+                // Continue to next iteration
+                continue;
+            }
 
             // Delay between iterations
             if (_config.IterationDelayMs > 0 && State == LoopState.Running)

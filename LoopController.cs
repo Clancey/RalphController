@@ -397,7 +397,36 @@ public class LoopController : IDisposable
 
         // Create and run process - use OllamaClient for Ollama provider
         // Wrap in try-catch to handle agent failures gracefully
+        // Apply inactivity timeout if configured (timeout resets on any output)
         AIResult result;
+        using var timeoutCts = new CancellationTokenSource();
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        var iterationToken = linkedCts.Token;
+
+        // Track last activity for inactivity-based timeout
+        var lastActivityTime = DateTime.UtcNow;
+        var inactivityTimeout = _config.IterationTimeoutMinutes > 0
+            ? TimeSpan.FromMinutes(_config.IterationTimeoutMinutes)
+            : TimeSpan.MaxValue;
+
+        // Background task to check for inactivity timeout
+        var timeoutTask = Task.Run(async () =>
+        {
+            while (!timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None).ConfigureAwait(false);
+                var elapsed = DateTime.UtcNow - lastActivityTime;
+                if (elapsed >= inactivityTimeout)
+                {
+                    timeoutCts.Cancel();
+                    break;
+                }
+            }
+        }, CancellationToken.None);
+
+        // Action to reset the inactivity timer
+        void ResetActivityTimer() => lastActivityTime = DateTime.UtcNow;
+
         try
         {
             if (currentProvider == AIProvider.Ollama)
@@ -407,18 +436,31 @@ public class LoopController : IDisposable
                 var model = currentProviderConfig.Arguments ?? "llama3.1:8b";
 
                 _ollamaClient = new OllamaClient(baseUrl, model, _config.TargetDirectory);
-                _ollamaClient.OnOutput += text => OnOutput?.Invoke(text);
-                _ollamaClient.OnToolCall += (name, args) => OnOutput?.Invoke($"[Tool: {name}]");
+                _ollamaClient.OnOutput += text =>
+                {
+                    ResetActivityTimer();
+                    OnOutput?.Invoke(text);
+                };
+                _ollamaClient.OnToolCall += (name, args) =>
+                {
+                    ResetActivityTimer();
+                    OnOutput?.Invoke($"[Tool: {name}]");
+                };
                 _ollamaClient.OnToolResult += (name, res) =>
                 {
+                    ResetActivityTimer();
                     var preview = res.Length > 500 ? res.Substring(0, 500) + "..." : res;
                     OnOutput?.Invoke($"[Result: {preview}]");
                 };
-                _ollamaClient.OnError += err => OnError?.Invoke(err);
+                _ollamaClient.OnError += err =>
+                {
+                    ResetActivityTimer();
+                    OnError?.Invoke(err);
+                };
 
                 try
                 {
-                    var ollamaResult = await _ollamaClient.RunAsync(prompt, cancellationToken);
+                    var ollamaResult = await _ollamaClient.RunAsync(prompt, iterationToken);
                     result = new AIResult
                     {
                         Success = ollamaResult.Success,
@@ -438,12 +480,20 @@ public class LoopController : IDisposable
                 // For other providers, use AIProcess with dynamic config
                 var dynamicConfig = _config with { ProviderConfig = currentProviderConfig, Provider = currentProvider };
                 _currentProcess = new AIProcess(dynamicConfig);
-                _currentProcess.OnOutput += line => OnOutput?.Invoke(line);
-                _currentProcess.OnError += line => OnError?.Invoke(line);
+                _currentProcess.OnOutput += line =>
+                {
+                    ResetActivityTimer();
+                    OnOutput?.Invoke(line);
+                };
+                _currentProcess.OnError += line =>
+                {
+                    ResetActivityTimer();
+                    OnError?.Invoke(line);
+                };
 
                 try
                 {
-                    result = await _currentProcess.RunAsync(prompt, cancellationToken);
+                    result = await _currentProcess.RunAsync(prompt, iterationToken);
                 }
                 finally
                 {
@@ -451,10 +501,50 @@ public class LoopController : IDisposable
                     _currentProcess = null;
                 }
             }
+
+            // Cancel the timeout checker once we're done
+            timeoutCts.Cancel();
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // Iteration timed out due to inactivity - log and continue to next iteration
+            var providerName = currentModel?.DisplayName ?? currentProvider.ToString();
+            OnError?.Invoke($"[Timeout] No activity for {_config.IterationTimeoutMinutes} minutes");
+            OnOutput?.Invoke("");
+            OnOutput?.Invoke("╔══════════════════════════════════════════════════════════════╗");
+            OnOutput?.Invoke($"║  INACTIVITY TIMEOUT ({_config.IterationTimeoutMinutes} min): {providerName,-34} ║");
+            OnOutput?.Invoke("╚══════════════════════════════════════════════════════════════╝");
+            OnOutput?.Invoke($"No output received for {_config.IterationTimeoutMinutes} minutes - model appears hung.");
+            OnOutput?.Invoke("");
+
+            // Create a timed-out result
+            result = new AIResult
+            {
+                Success = false,
+                ExitCode = -2, // Use -2 to indicate timeout
+                Output = "",
+                Error = $"No activity for {_config.IterationTimeoutMinutes} minutes - model appears hung"
+            };
+
+            // Notify model selector of failure for fallback strategy
+            _modelSelector.OnIterationFailed(isRateLimit: false);
+
+            // Record iteration as failed but continue
+            _statistics.CompleteIteration(false);
+            OnIterationComplete?.Invoke(_statistics.CurrentIteration, result);
+
+            // Move to next model if in multi-model mode
+            if (_config.MultiModel?.IsEnabled == true)
+            {
+                _modelSelector.AfterIteration(0);
+                OnOutput?.Invoke("[Loop] Rotating to next model and continuing...");
+            }
+
+            return; // Continue to next iteration
         }
         catch (OperationCanceledException)
         {
-            // Re-throw cancellation - this is expected behavior
+            // User cancellation - this is expected behavior, re-throw to exit loop
             throw;
         }
         catch (Exception ex)

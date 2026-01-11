@@ -16,8 +16,25 @@ static string? NormalizeOpenCodeModel(string? model)
         return model;
     }
 
-    // For local models, assume ollama provider
-    return $"ollama/{model}";
+    // Known OpenCode models (without provider prefix)
+    var openCodeModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "big-pickle", "glm-4.7-free", "gpt-5-nano", "grok-code", "minimax-m2.1-free"
+    };
+
+    if (openCodeModels.Contains(model))
+    {
+        return $"opencode/{model}";
+    }
+
+    // If it has a tag (like :8b, :70b), it's likely an Ollama model
+    if (model.Contains(':'))
+    {
+        return $"ollama/{model}";
+    }
+
+    // Default to opencode provider for unrecognized models
+    return $"opencode/{model}";
 }
 
 static Task<List<string>> GetClaudeModels()

@@ -66,10 +66,39 @@ public class ModelSpec
             AIProvider.Copilot => AIProviderConfig.ForCopilot(ExecutablePath, Model),
             AIProvider.Gemini => AIProviderConfig.ForGemini(ExecutablePath, Model),
             AIProvider.Cursor => AIProviderConfig.ForCursor(ExecutablePath, Model),
-            AIProvider.OpenCode => AIProviderConfig.ForOpenCode(ExecutablePath, Model),
+            AIProvider.OpenCode => AIProviderConfig.ForOpenCode(ExecutablePath, NormalizeOpenCodeModel(Model)),
             AIProvider.Ollama => AIProviderConfig.ForOllama(BaseUrl, Model),
             _ => throw new ArgumentOutOfRangeException(nameof(Provider), $"Unknown provider: {Provider}")
         };
+    }
+
+    /// <summary>
+    /// Normalizes OpenCode model names to include provider prefix
+    /// </summary>
+    private static string? NormalizeOpenCodeModel(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+            return null;
+
+        // If it already has provider prefix, use as-is
+        if (model.Contains('/'))
+            return model;
+
+        // Known OpenCode models (without provider prefix)
+        var openCodeModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "big-pickle", "glm-4.7-free", "gpt-5-nano", "grok-code", "minimax-m2.1-free"
+        };
+
+        if (openCodeModels.Contains(model))
+            return $"opencode/{model}";
+
+        // If it has a tag (like :8b, :70b), it's likely an Ollama model
+        if (model.Contains(':'))
+            return $"ollama/{model}";
+
+        // Default to opencode provider for unrecognized models
+        return $"opencode/{model}";
     }
 
     private AIProviderConfig CreateClaudeConfig()

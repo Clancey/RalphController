@@ -58,6 +58,9 @@ public record RalphConfig
     /// <summary>Enable final verification step before completing</summary>
     public bool EnableFinalVerification { get; init; } = true;
 
+    /// <summary>Maximum time for a single iteration in minutes (default: 30, 0 = no timeout)</summary>
+    public int IterationTimeoutMinutes { get; init; } = 30;
+
     /// <summary>Full path to prompt file</summary>
     public string PromptFilePath => Path.Combine(TargetDirectory, PromptFile);
 

@@ -716,13 +716,15 @@ public class LoopController : IDisposable
             OnOutput?.Invoke($"[Analysis] ShouldExit={analysis.ShouldExit}, Confidence={analysis.ConfidenceScore}, Signal={analysis.HasCompletionSignal}");
 
             // Reset circuit breaker if we detect any completion signal (to allow time for signal threshold)
-            if (analysis.HasCompletionSignal && _config.EnableCircuitBreaker)
+            // Only reset on successful iterations - don't let error messages with false positive signals reset the breaker
+            if (analysis.HasCompletionSignal && _config.EnableCircuitBreaker && result.Success)
             {
                 _circuitBreaker.Reset();
                 OnOutput?.Invoke("[Analysis] Completion signal detected - circuit breaker reset");
             }
 
-            if (analysis.ShouldExit && _config.AutoExitOnCompletion)
+            // Only consider exiting on successful iterations - failed iterations shouldn't trigger completion
+            if (analysis.ShouldExit && _config.AutoExitOnCompletion && result.Success)
             {
                 OnOutput?.Invoke($"[Analysis] Exit triggered: {analysis.ExitReason}");
                 // Check if we need to run multi-model verification first

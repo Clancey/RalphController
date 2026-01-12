@@ -1286,9 +1286,9 @@ if (provider == AIProvider.Ollama)
     AnsiConsole.MarkupLine($"[green]Model:[/] {ollamaModel}");
 }
 
-// Ask about multi-model configuration (skip if --fresh and already configured, or in no-tui mode)
+// Ask about multi-model configuration (only if never configured, or --fresh mode)
 MultiModelConfig? multiModelConfig = null;
-if (!noTui && (freshMode || projectSettings.MultiModel == null || !projectSettings.MultiModel.IsEnabled))
+if (!noTui && (freshMode || projectSettings.MultiModel == null))
 {
     var multiModelChoice = AnsiConsole.Prompt(
         new SelectionPrompt<string>()
@@ -1298,7 +1298,12 @@ if (!noTui && (freshMode || projectSettings.MultiModel == null || !projectSettin
                 "Verification model - use a second model to verify completion",
                 "Round-robin rotation - alternate between models each iteration"));
 
-    if (multiModelChoice != "Single model (default)")
+    if (multiModelChoice == "Single model (default)")
+    {
+        // Save explicit "single model" choice so we don't ask again
+        projectSettings.MultiModel = new MultiModelConfig { Strategy = ModelSwitchStrategy.None };
+    }
+    else
     {
         var strategy = multiModelChoice.StartsWith("Verification")
             ? ModelSwitchStrategy.Verification

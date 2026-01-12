@@ -468,43 +468,31 @@ public static class FinalVerification
         return $@"
 ---FINAL_VERIFICATION_REQUEST---
 
-You indicated that the task is complete. Before we finish, please perform a STRICT final verification:
+You indicated that the task is complete. Before we finish, please verify ALL tasks are done.
 
-1. Review EVERY SINGLE item in the implementation plan or task list - not just high priority ones
-2. For EACH item, verify it has been FULLY implemented:
-   - Check that the code exists and is correct
-   - Verify tests pass (if applicable)
-   - Confirm the feature works as expected
-   - If you haven't actually tested/verified it, it is NOT complete
+Review EVERY item in the implementation plan. Report ANY that are not fully complete.
 
-3. Task status definitions (BE STRICT):
-   - [x] COMPLETE - Code written, tested, and verified working
-   - [?] NOT COMPLETE - Awaiting verification means YOU need to verify it NOW
-   - [ ] NOT COMPLETE - Not started or not finished
-   - Any task not marked [x] is INCOMPLETE
-
-4. Report your findings in this EXACT format:
+Report your findings in this EXACT format:
 
 ---VERIFICATION_RESULT---
-OVERALL_STATUS: [COMPLETE or INCOMPLETE]
-
-COMPLETED_TASKS:
-- [Task 1 that is done]
-- [Task 2 that is done]
-
-INCOMPLETE_TASKS:
+REMAINING_TASKS:
 - [Task that still needs work]: [What's missing]
 - [Another incomplete task]: [What's missing]
+(Write ""None"" if all tasks are truly complete)
 
-SUMMARY: [Brief summary of verification findings]
+WAITING_VERIFICATION:
+- [Task marked [?] that needs verification]
+(Write ""None"" if no tasks are waiting)
+
+SUMMARY: [One line summary]
 ---END_VERIFICATION---
 
-CRITICAL RULES:
-- Report INCOMPLETE if ANY task is not marked [x] in the plan
-- Tasks marked [?] are NOT complete - verify them now or mark as incomplete
-- Do NOT skip tasks because they are ""low priority"" or ""can be done later""
-- ALL tasks must be [x] complete before reporting OVERALL_STATUS: COMPLETE
-- If you find incomplete tasks, continue working on them instead of reporting COMPLETE
+RULES:
+- List ANY task not marked [x] under REMAINING_TASKS
+- List ANY task marked [?] under WAITING_VERIFICATION
+- Tasks marked [?] are NOT complete - they need verification
+- Do NOT skip ""low priority"" tasks - ALL tasks must be done
+- If you find ANY remaining or waiting tasks, list them and continue working
 {planSection}
 ";
     }
@@ -521,49 +509,47 @@ CRITICAL RULES:
 
         if (!match.Success)
         {
-            // Try alternative patterns
-            match = Regex.Match(output,
-                @"OVERALL_STATUS:\s*(COMPLETE|INCOMPLETE)",
-                RegexOptions.IgnoreCase);
-
-            if (!match.Success)
+            // Try finding REMAINING_TASKS section directly
+            if (!output.Contains("REMAINING_TASKS", StringComparison.OrdinalIgnoreCase))
                 return null;
         }
 
-        var content = match.Groups[1].Value;
+        var content = match.Success ? match.Groups[1].Value : output;
         var result = new VerificationResult();
 
-        // Parse overall status
-        var statusMatch = Regex.Match(content, @"OVERALL_STATUS:\s*(COMPLETE|INCOMPLETE)", RegexOptions.IgnoreCase);
-        if (statusMatch.Success)
+        // Helper to parse task list, returns items (excluding "None")
+        List<string> ParseTaskList(string sectionName)
         {
-            result.AllTasksComplete = statusMatch.Groups[1].Value.Equals("COMPLETE", StringComparison.OrdinalIgnoreCase);
+            var items = new List<string>();
+            var sectionMatch = Regex.Match(content,
+                $@"{sectionName}:\s*((?:[-*]\s*.+\n?)+|None)",
+                RegexOptions.IgnoreCase);
+
+            if (sectionMatch.Success)
+            {
+                var section = sectionMatch.Groups[1].Value.Trim();
+                if (!section.Equals("None", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (Match taskMatch in Regex.Matches(section, @"[-*]\s*(.+?)(?:\n|$)"))
+                    {
+                        var task = taskMatch.Groups[1].Value.Trim();
+                        if (!string.IsNullOrEmpty(task) && !task.Equals("None", StringComparison.OrdinalIgnoreCase))
+                            items.Add(task);
+                    }
+                }
+            }
+            return items;
         }
 
-        // Parse completed tasks
-        var completedMatch = Regex.Match(content, @"COMPLETED_TASKS:\s*((?:- .+\n?)+)", RegexOptions.IgnoreCase);
-        if (completedMatch.Success)
-        {
-            var tasks = completedMatch.Groups[1].Value;
-            foreach (Match taskMatch in Regex.Matches(tasks, @"- (.+?)(?:\n|$)"))
-            {
-                var task = taskMatch.Groups[1].Value.Trim();
-                if (!string.IsNullOrEmpty(task))
-                    result.CompletedTasks.Add(task);
-            }
-        }
+        // Parse REMAINING_TASKS
+        var remainingTasks = ParseTaskList("REMAINING_TASKS");
+        result.IncompleteTasks.AddRange(remainingTasks);
 
-        // Parse incomplete tasks
-        var incompleteMatch = Regex.Match(content, @"INCOMPLETE_TASKS:\s*((?:- .+\n?)+)", RegexOptions.IgnoreCase);
-        if (incompleteMatch.Success)
+        // Parse WAITING_VERIFICATION
+        var waitingTasks = ParseTaskList("WAITING_VERIFICATION");
+        foreach (var task in waitingTasks)
         {
-            var tasks = incompleteMatch.Groups[1].Value;
-            foreach (Match taskMatch in Regex.Matches(tasks, @"- (.+?)(?:\n|$)"))
-            {
-                var task = taskMatch.Groups[1].Value.Trim();
-                if (!string.IsNullOrEmpty(task) && !task.Equals("None", StringComparison.OrdinalIgnoreCase))
-                    result.IncompleteTasks.Add(task);
-            }
+            result.IncompleteTasks.Add($"[Waiting verification] {task}");
         }
 
         // Parse summary
@@ -572,6 +558,9 @@ CRITICAL RULES:
         {
             result.Summary = summaryMatch.Groups[1].Value.Trim();
         }
+
+        // Simple logic: complete only if NO remaining tasks and NO waiting verification
+        result.AllTasksComplete = result.IncompleteTasks.Count == 0;
 
         // STRICT VALIDATION: Override AllTasksComplete if we detect any incomplete indicators
         // This prevents the AI from claiming COMPLETE when tasks are still pending
@@ -593,18 +582,55 @@ CRITICAL RULES:
             }
         }
 
-        // Check 3: Look for phrases indicating incomplete work
+        // Check 3: Look for section headers indicating incomplete work
+        // These are strong indicators that override OVERALL_STATUS: COMPLETE
+        var incompleteSectionPatterns = new[] {
+            @"(?:items?\s+)?waiting\s+(?:for\s+)?verification",
+            @"needs?\s+(?:production\s+)?testing",
+            @"remaining\s+(?:tasks?|items?|work)",
+            @"incomplete\s+(?:tasks?|items?)",
+            @"not\s+(?:yet\s+)?(?:implemented|completed|done|started)",
+            @"still\s+(?:needs?|requires?|pending)",
+            @"blocked\s+(?:tasks?|items?|by)",
+            @"pending\s+(?:tasks?|items?|work)",
+            @"todo|to\s+do",
+            @"work\s+in\s+progress"
+        };
+
+        foreach (var pattern in incompleteSectionPatterns)
+        {
+            if (result.AllTasksComplete && Regex.IsMatch(output, pattern, RegexOptions.IgnoreCase))
+            {
+                // Check if this is in a section header or significant context (not just a passing mention)
+                var headerMatch = Regex.Match(output,
+                    $@"(?:\*\*|##|#{1,3})\s*.*{pattern}.*(?:\*\*|:|\n)",
+                    RegexOptions.IgnoreCase);
+
+                // Also check for list items following the pattern
+                var listMatch = Regex.Match(output,
+                    $@"{pattern}[^\n]*:?\s*\n\s*[-*]",
+                    RegexOptions.IgnoreCase);
+
+                if (headerMatch.Success || listMatch.Success)
+                {
+                    result.AllTasksComplete = false;
+                    result.IncompleteTasks.Add($"Found incomplete section: matches '{pattern}'");
+                    break;
+                }
+            }
+        }
+
+        // Check 4: Look for phrases indicating incomplete work in task context
         var incompleteIndicators = new[] {
             "not yet implemented", "not implemented", "needs implementation",
-            "todo", "to do", "still need", "remaining task", "pending",
-            "not started", "awaiting", "blocked", "waiting for"
+            "still need", "remaining task"
         };
         foreach (var indicator in incompleteIndicators)
         {
             if (output.Contains(indicator, StringComparison.OrdinalIgnoreCase) &&
                 result.AllTasksComplete)
             {
-                // Only flag if there's strong evidence - look for task-like context
+                // Flag if in task-like context (with checkbox marker)
                 var indicatorMatch = Regex.Match(output,
                     $@"[-*]\s*\[.\].*{Regex.Escape(indicator)}",
                     RegexOptions.IgnoreCase);

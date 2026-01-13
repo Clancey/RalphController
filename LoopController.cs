@@ -241,6 +241,20 @@ public class LoopController : IDisposable
         _injectedPrompt = prompt;
     }
 
+    /// <summary>
+    /// Inject a one-time prompt with a specific model to use for the next iteration
+    /// </summary>
+    public void InjectPrompt(string prompt, ModelSpec model)
+    {
+        _injectedPrompt = prompt;
+        _modelSelector.InjectModel(model);
+    }
+
+    /// <summary>
+    /// Get the model selector for advanced operations
+    /// </summary>
+    public ModelSelector GetModelSelector() => _modelSelector;
+
     private async Task RunLoopAsync(CancellationToken cancellationToken)
     {
         OnOutput?.Invoke("[Loop] Starting main loop...");

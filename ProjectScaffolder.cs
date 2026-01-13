@@ -202,35 +202,34 @@ public class ProjectScaffolder
                     You are creating an agents.md file for an autonomous AI coding project.
 
                     CRITICAL: This is an OPERATIONAL GUIDE for how the AI agent should operate.
-                    It defines subagents, rules, and workflows - NOT project documentation.
+                    It defines workflow, rules, and build commands - NOT project documentation.
 
                     VERIFICATION WORKFLOW - CRITICAL:
-                    This project uses a verification system where one agent does work and another verifies it.
+                    This project uses a verification system where work is marked `[?]` and verified in the next iteration.
                     Tasks have THREE states:
                     - `[ ]` - Incomplete (not started or needs rework)
-                    - `[?]` - Waiting verification (work done, needs different agent to verify)
-                    - `[x]` - Complete (verified by a second agent)
+                    - `[?]` - Waiting verification (work done, needs verification)
+                    - `[x]` - Complete (verified)
 
                     YOUR OUTPUT MUST START EXACTLY LIKE THIS:
                     ```
                     # Agent Configuration
 
-                    ## Core Principle: Monolithic Scheduler with Subagents
+                    ## Core Principle
 
-                    This project uses a single autonomous agent running in a bash loop.
+                    - **One task at a time** - Pick ONE incomplete task, complete it, verify it works
+                    - **ALL tasks must be completed** - Not just high priority ones
+                    - **Verification workflow** - Mark work `[?]` after completion, next iteration verifies before `[x]`
+                    - **Commit often** - After every successful change
                     ```
 
                     REQUIRED SECTIONS:
-                    1. Core Principle - explain scheduler pattern
-                    2. Agent Architecture - ASCII diagram showing Primary Agent and Subagents
-                    3. Subagent Types - define Explore, Implement, Build/Test agents
-                    4. Agent Rules - numbered list including verification rules:
-                       - Mark completed work as `[?]` not `[x]`
-                       - Verify `[?]` tasks before starting new work
-                       - Never self-verify (can't mark own work `[x]`)
-                    5. Task Selection Algorithm - prioritize `[?]` verification first, then `[ ]` tasks
-                    6. Build Commands - actual commands for this project
-                    7. Error Handling - what to do when things fail
+                    1. Core Principle - one task at a time, all tasks must be done
+                    2. Build Commands - actual commands for this project
+                    3. Test Commands - actual test commands for this project
+                    4. Task Selection - how to pick the next task
+                    5. Error Handling - what to do when things fail
+                    6. Project-Specific Rules - any special rules for this project
 
                     DO NOT output JSON. DO NOT output the project spec.
                     """;
@@ -613,72 +612,12 @@ public class ProjectScaffolder
     private static string GetDefaultAgentsMd() => """
         # Agent Configuration
 
-        ## Core Principle: Monolithic Scheduler with Subagents
+        ## Core Principle
 
-        This project uses a single autonomous agent running in a bash loop. The primary context window operates as a **scheduler** that spawns subagents for specific tasks. This extends effective context while maintaining a single source of truth.
-
-        ## Agent Architecture
-
-        ```
-        ┌─────────────────────────────────────────────────────────────┐
-        │                    Primary Agent (Scheduler)                 │
-        │                                                              │
-        │  - Reads PROMPT.md each loop                                │
-        │  - Loads IMPLEMENTATION_PLAN.md                             │
-        │  - Selects ONE task per loop                                │
-        │  - Spawns subagents for work                                │
-        │  - Updates plan after completion                            │
-        │  - Commits when tests pass                                  │
-        └─────────────────────────────────────────────────────────────┘
-                   │                    │                    │
-                   ▼                    ▼                    ▼
-            ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-            │  Explore    │     │  Implement  │     │  Build/Test │
-            │  Subagent   │     │  Subagent   │     │  Subagent   │
-            │  (parallel) │     │  (parallel) │     │  (serial)   │
-            └─────────────┘     └─────────────┘     └─────────────┘
-        ```
-
-        ## Subagent Types
-
-        ### 1. Explore Agent
-        **Purpose**: Search and understand the codebase before making changes.
-        **Subagent type**: `Explore`
-        **Parallelism**: Up to 5 concurrent
-
-        **When to use**:
-        - Before implementing ANY feature
-        - When unsure if something exists
-        - To find related code patterns
-
-        ### 2. Implementation Agent
-        **Purpose**: Write and modify code.
-        **Subagent type**: Use language-specific (e.g., `csharp-pro`, `python-pro`, `typescript-pro`)
-        **Parallelism**: Up to 3 concurrent
-
-        ### 3. Build/Test Agent
-        **Purpose**: Run builds and tests to verify changes.
-        **Subagent type**: `debugger`
-        **CRITICAL**: Only ONE at a time.
-
-        ## Agent Rules
-
-        1. **One Task Per Loop**: Pick ONE task from implementation_plan.md per iteration
-        2. **Search Before Implementing**: Always spawn Explore agent before coding
-        3. **Parallel Exploration, Serial Building**: Multiple explores OK, but only 1 build/test
-        4. **No Placeholders**: Every implementation must be complete
-        5. **Tests as Backpressure**: Fix failures before proceeding
-        6. **Commit When Green**: Commit after tests pass
-        7. **Update the Plan**: Mark tasks complete and add discoveries
-
-        ## Task Selection Algorithm
-
-        1. Read IMPLEMENTATION_PLAN.md
-        2. Find an incomplete `[ ]` task (ALL tasks must be completed, not just high priority)
-        3. If blocked, complete blocking task first
-        4. Execute selected task
-        5. Update plan
-        6. Loop until ALL tasks are `[x]` complete
+        - **One task at a time** - Pick ONE incomplete task, complete it, verify it works
+        - **ALL tasks must be completed** - Not just high priority ones
+        - **Verification workflow** - Mark work `[?]` after completion, next iteration verifies before `[x]`
+        - **Commit often** - After every successful change
 
         ## Build Commands
 
@@ -692,19 +631,20 @@ public class ProjectScaffolder
         # Add test commands for this project
         ```
 
+        ## Task Selection
+
+        1. Read IMPLEMENTATION_PLAN.md
+        2. Find an incomplete `[ ]` task (ALL tasks must be completed)
+        3. If blocked, complete blocking task first
+        4. Execute selected task
+        5. Update plan
+        6. Loop until ALL tasks are `[x]` complete
+
         ## Error Handling
 
-        ### Build Errors
-        1. Spawn debugger agent to analyze
-        2. Spawn explore agent to find similar working code
-        3. Implement fix
-        4. Re-run build
-
-        ### Stuck Agent
-        If no progress after 3 attempts:
-        1. Document blocker in IMPLEMENTATION_PLAN.md
-        2. Move to next non-blocked task
-        3. Return later with fresh context
+        - **Build errors**: Try to fix, if stuck 3 times mark as blocked and move on
+        - **Test failures**: Fix before proceeding
+        - **File not found**: Use glob or list_directory to find it
 
         ## See Also
 

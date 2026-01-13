@@ -13,6 +13,7 @@ public class ModelSelector
     private int _verificationAttempts;
     private bool _pendingVerification;
     private int _filesModifiedBeforeVerification;
+    private ModelSpec? _injectedModel; // One-time model override for next iteration
 
     /// <summary>Current model index in the Models list</summary>
     public int CurrentIndex => _currentIndex;
@@ -25,6 +26,9 @@ public class ModelSelector
 
     /// <summary>Whether currently running a verification iteration</summary>
     public bool IsVerificationIteration { get; private set; }
+
+    /// <summary>Whether an injected model is pending</summary>
+    public bool HasInjectedModel => _injectedModel != null;
 
     /// <summary>Files modified before verification started (for comparison)</summary>
     public int FilesModifiedBeforeVerification => _filesModifiedBeforeVerification;
@@ -53,6 +57,14 @@ public class ModelSelector
     /// </summary>
     public ModelSpec? GetCurrentModel()
     {
+        // If an injected model is pending, use it (one-time override)
+        if (_injectedModel != null)
+        {
+            var model = _injectedModel;
+            _injectedModel = null; // Clear after use
+            return model;
+        }
+
         if (!_config.IsEnabled || _config.Models.Count == 0)
             return null;
 
@@ -69,6 +81,14 @@ public class ModelSelector
 
         IsVerificationIteration = false;
         return _config.Models[_currentIndex];
+    }
+
+    /// <summary>
+    /// Inject a specific model to use for the next iteration (one-time override)
+    /// </summary>
+    public void InjectModel(ModelSpec model)
+    {
+        _injectedModel = model;
     }
 
     /// <summary>

@@ -1425,116 +1425,126 @@ if (provider == AIProvider.Ollama)
 MultiModelConfig? multiModelConfig = null;
 if (!noTui && (freshMode || projectSettings.MultiModel == null))
 {
-    var multiModelChoice = AnsiConsole.Prompt(
-        new SelectionPrompt<string>()
-            .Title("\n[yellow]Multi-model configuration:[/]")
-            .AddChoices(
-                "Single model (default)",
-                "Verification model - use a second model to verify completion",
-                "Round-robin rotation - alternate between models each iteration"));
-
-    if (multiModelChoice == "Single model (default)")
+    bool multiModelConfigured = false;
+    while (!multiModelConfigured)
     {
-        // Save explicit "single model" choice so we don't ask again
-        projectSettings.MultiModel = new MultiModelConfig { Strategy = ModelSwitchStrategy.None };
-    }
-    else
-    {
-        var strategy = multiModelChoice.StartsWith("Verification")
-            ? ModelSwitchStrategy.Verification
-            : ModelSwitchStrategy.RoundRobin;
+        var multiModelChoice = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("\n[yellow]Multi-model configuration:[/]")
+                .AddChoices(
+                    "Single model (default)",
+                    "Verification model - use a second model to verify completion",
+                    "Round-robin rotation - alternate between models each iteration"));
 
-        // Create primary model spec from current selection
-        var primaryModelName = provider switch
+        if (multiModelChoice == "Single model (default)")
         {
-            AIProvider.Claude => claudeModel ?? "sonnet",
-            AIProvider.Codex => codexModel ?? "o3",
-            AIProvider.Copilot => copilotModel ?? "gpt-5",
-            AIProvider.Gemini => geminiModel ?? "gemini-2.5-pro",
-            AIProvider.Cursor => cursorModel ?? "claude-sonnet",
-            AIProvider.OpenCode => openCodeModel ?? "",
-            AIProvider.Ollama => ollamaModel ?? "llama3.1:8b",
-            _ => ""
-        };
-
-        var primaryModel = new ModelSpec
-        {
-            Provider = provider,
-            Model = primaryModelName,
-            BaseUrl = provider == AIProvider.Ollama ? ollamaUrl : null,
-            Label = !string.IsNullOrEmpty(primaryModelName) ? primaryModelName : provider.ToString()
-        };
-
-        var modelList = new List<ModelSpec> { primaryModel };
-
-        var cancelled = false;
-        if (strategy == ModelSwitchStrategy.Verification)
-        {
-            // For verification, only need one verifier model
-            AnsiConsole.MarkupLine("\n[yellow]Select verifier model:[/]");
-            var verifierModel = await PromptForModelSpec("Verifier", ollamaUrl);
-            if (verifierModel != null)
-            {
-                modelList.Add(verifierModel);
-            }
-            else
-            {
-                // User went back - cancel multi-model setup
-                cancelled = true;
-                AnsiConsole.MarkupLine("[dim]Multi-model configuration cancelled.[/]");
-            }
+            // Save explicit "single model" choice so we don't ask again
+            projectSettings.MultiModel = new MultiModelConfig { Strategy = ModelSwitchStrategy.None };
+            multiModelConfigured = true;
         }
         else
         {
-            // For round-robin, allow adding multiple models
-            var modelIndex = 2;
-            var addMore = true;
+            var strategy = multiModelChoice.StartsWith("Verification")
+                ? ModelSwitchStrategy.Verification
+                : ModelSwitchStrategy.RoundRobin;
 
-            while (addMore)
+            // Create primary model spec from current selection
+            var primaryModelName = provider switch
             {
-                AnsiConsole.MarkupLine($"\n[yellow]Add model #{modelIndex} for rotation:[/]");
-                var nextModel = await PromptForModelSpec($"Model {modelIndex}", ollamaUrl);
-                if (nextModel != null)
-                {
-                    modelList.Add(nextModel);
-                    modelIndex++;
-                }
-                else if (modelList.Count == 1)
-                {
-                    // User went back on first additional model - cancel entirely
-                    cancelled = true;
-                    AnsiConsole.MarkupLine("[dim]Multi-model configuration cancelled.[/]");
-                    break;
-                }
-                // else: user went back but we have at least 2 models, just stop adding more
-
-                if (!cancelled && modelList.Count > 1)
-                {
-                    // Ask if they want to add another model
-                    addMore = AnsiConsole.Confirm("[yellow]Add another model to the rotation?[/]", false);
-                }
-                else if (cancelled)
-                {
-                    break;
-                }
-            }
-        }
-
-        if (!cancelled)
-        {
-            multiModelConfig = new MultiModelConfig
-            {
-                Strategy = strategy,
-                Models = modelList,
-                Verification = strategy == ModelSwitchStrategy.Verification
-                    ? new VerificationConfig { VerifierIndex = modelList.Count - 1, Trigger = VerificationTrigger.CompletionSignal }
-                    : null
+                AIProvider.Claude => claudeModel ?? "sonnet",
+                AIProvider.Codex => codexModel ?? "o3",
+                AIProvider.Copilot => copilotModel ?? "gpt-5",
+                AIProvider.Gemini => geminiModel ?? "gemini-2.5-pro",
+                AIProvider.Cursor => cursorModel ?? "claude-sonnet",
+                AIProvider.OpenCode => openCodeModel ?? "",
+                AIProvider.Ollama => ollamaModel ?? "llama3.1:8b",
+                _ => ""
             };
 
-            projectSettings.MultiModel = multiModelConfig;
+            var primaryModel = new ModelSpec
+            {
+                Provider = provider,
+                Model = primaryModelName,
+                BaseUrl = provider == AIProvider.Ollama ? ollamaUrl : null,
+                Label = !string.IsNullOrEmpty(primaryModelName) ? primaryModelName : provider.ToString()
+            };
 
-            var modelNames = string.Join(" → ", modelList.Select(m => m.DisplayName));
-            AnsiConsole.MarkupLine($"[green]Multi-model:[/] {strategy} - {modelNames}");
+            var modelList = new List<ModelSpec> { primaryModel };
+
+            var cancelled = false;
+            if (strategy == ModelSwitchStrategy.Verification)
+            {
+                // For verification, only need one verifier model
+                AnsiConsole.MarkupLine("\n[yellow]Select verifier model:[/]");
+                var verifierModel = await PromptForModelSpec("Verifier", ollamaUrl);
+                if (verifierModel != null)
+                {
+                    modelList.Add(verifierModel);
+                    multiModelConfigured = true;
+                }
+                else
+                {
+                    // User went back - loop back to multi-model choice
+                    AnsiConsole.MarkupLine("[dim]Going back to multi-model selection...[/]");
+                }
+            }
+            else
+            {
+                // For round-robin, allow adding multiple models
+                var modelIndex = 2;
+                var addMore = true;
+
+                while (addMore)
+                {
+                    AnsiConsole.MarkupLine($"\n[yellow]Add model #{modelIndex} for rotation:[/]");
+                    var nextModel = await PromptForModelSpec($"Model {modelIndex}", ollamaUrl);
+                    if (nextModel != null)
+                    {
+                        modelList.Add(nextModel);
+                        modelIndex++;
+                    }
+                    else if (modelList.Count == 1)
+                    {
+                        // User went back on first additional model - loop back to multi-model choice
+                        cancelled = true;
+                        AnsiConsole.MarkupLine("[dim]Going back to multi-model selection...[/]");
+                        break;
+                    }
+                    // else: user went back but we have at least 2 models, just stop adding more
+
+                    if (!cancelled && modelList.Count > 1)
+                    {
+                        // Ask if they want to add another model
+                        addMore = AnsiConsole.Confirm("[yellow]Add another model to the rotation?[/]", false);
+                    }
+                    else if (cancelled)
+                    {
+                        break;
+                    }
+                }
+
+                if (!cancelled)
+                {
+                    multiModelConfigured = true;
+                }
+            }
+
+            if (multiModelConfigured)
+            {
+                multiModelConfig = new MultiModelConfig
+                {
+                    Strategy = strategy,
+                    Models = modelList,
+                    Verification = strategy == ModelSwitchStrategy.Verification
+                        ? new VerificationConfig { VerifierIndex = modelList.Count - 1, Trigger = VerificationTrigger.CompletionSignal }
+                        : null
+                };
+
+                projectSettings.MultiModel = multiModelConfig;
+
+                var modelNames = string.Join(" → ", modelList.Select(m => m.DisplayName));
+                AnsiConsole.MarkupLine($"[green]Multi-model:[/] {strategy} - {modelNames}");
+            }
         }
     }
 }

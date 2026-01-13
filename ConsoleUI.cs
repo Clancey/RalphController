@@ -315,18 +315,120 @@ public class ConsoleUI : IDisposable
 
     private async Task HandleInjectAsync()
     {
-        // For now, use a simple text prompt
-        // In a more advanced version, this could open an editor
         AnsiConsole.Clear();
+
+        // Step 1: Get the prompt to inject
         var prompt = AnsiConsole.Prompt(
             new TextPrompt<string>("[yellow]Enter prompt to inject (or empty to cancel):[/]")
                 .AllowEmpty());
 
-        if (!string.IsNullOrWhiteSpace(prompt))
+        if (string.IsNullOrWhiteSpace(prompt))
         {
-            _controller.InjectPrompt(prompt);
-            AddOutputLine($"[yellow]>>> Injected prompt: {Markup.Escape(prompt.Length > 50 ? prompt[..50] + "..." : prompt)}[/]");
+            return; // Cancelled
         }
+
+        // Step 2: Ask about model selection
+        var useDifferentModel = AnsiConsole.Confirm(
+            "[yellow]Use a different model for this injection?[/]",
+            defaultValue: false);
+
+        if (useDifferentModel)
+        {
+            // Get available providers
+            var providers = Enum.GetValues<AIProvider>()
+                .Cast<AIProvider>()
+                .ToList();
+
+            var providerChoice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]Select provider:[/]")
+                    .AddChoices(providers.Select(p => p.ToString()).ToArray()));
+
+            var selectedProvider = Enum.Parse<AIProvider>(providerChoice);
+
+            // Get model name based on provider
+            string modelName;
+            switch (selectedProvider)
+            {
+                case AIProvider.Claude:
+                    modelName = AnsiConsole.Prompt(
+                        new TextPrompt<string>("[yellow]Enter Claude model (e.g., sonnet, opus):[/]")
+                            .DefaultValue("sonnet"));
+                    break;
+
+                case AIProvider.Codex:
+                    modelName = AnsiConsole.Prompt(
+                        new TextPrompt<string>("[yellow]Enter Codex model (e.g., o3, gpt-5.2-codex):[/]")
+                            .DefaultValue("o3"));
+                    break;
+
+                case AIProvider.Copilot:
+                    modelName = AnsiConsole.Prompt(
+                        new TextPrompt<string>("[yellow]Enter Copilot model (e.g., gpt-5, gpt-5-mini):[/]")
+                            .DefaultValue("gpt-5"));
+                    break;
+
+                case AIProvider.Gemini:
+                    modelName = AnsiConsole.Prompt(
+                        new TextPrompt<string>("[yellow]Enter Gemini model (e.g., gemini-2.5-pro):[/]")
+                            .DefaultValue("gemini-2.5-pro"));
+                    break;
+
+                case AIProvider.Cursor:
+                    modelName = AnsiConsole.Prompt(
+                        new TextPrompt<string>("[yellow]Enter Cursor model (e.g., claude-sonnet):[/]")
+                            .DefaultValue("claude-sonnet"));
+                    break;
+
+                case AIProvider.OpenCode:
+                    modelName = AnsiConsole.Prompt(
+                        new TextPrompt<string>("[yellow]Enter OpenCode model (e.g., opencode/llama3.1:70b):[/]")
+                            .DefaultValue("opencode/llama3.1:70b"));
+                    break;
+
+                case AIProvider.Ollama:
+                    var ollamaModel = AnsiConsole.Prompt(
+                        new TextPrompt<string>("[yellow]Enter Ollama model (e.g., llama3.1:8b):[/]")
+                            .DefaultValue("llama3.1:8b"));
+                    var ollamaUrl = AnsiConsole.Prompt(
+                        new TextPrompt<string>("[yellow]Ollama API URL (or Enter for localhost):[/]")
+                            .DefaultValue("http://localhost:11434"));
+
+                    var modelSpec = new ModelSpec
+                    {
+                        Provider = selectedProvider,
+                        Model = ollamaModel,
+                        BaseUrl = ollamaUrl,
+                        Label = ollamaModel
+                    };
+
+                    _controller.InjectPrompt(prompt, modelSpec);
+                    AddOutputLine($"[yellow]>>> Injected with model: {Markup.Escape($"{selectedProvider}/{ollamaModel}")}[/]");
+                    AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(prompt.Length > 50 ? prompt[..50] + "..." : prompt)}[/]");
+                    return;
+
+                default:
+                    modelName = "default";
+                    break;
+            }
+
+            var model = new ModelSpec
+            {
+                Provider = selectedProvider,
+                Model = modelName,
+                Label = modelName
+            };
+
+            _controller.InjectPrompt(prompt, model);
+            AddOutputLine($"[yellow]>>> Injected with model: {Markup.Escape($"{selectedProvider}/{modelName}")}[/]");
+        }
+        else
+        {
+            // Use current model, just inject prompt
+            _controller.InjectPrompt(prompt);
+        }
+
+        AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(prompt.Length > 50 ? prompt[..50] + "..." : prompt)}[/]");
     }
 
     private void AddOutputLine(string line, bool isRawOutput = false, bool isError = false)

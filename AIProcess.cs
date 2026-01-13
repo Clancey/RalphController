@@ -19,6 +19,7 @@ public class AIProcess : IDisposable
     private readonly StringBuilder _lineBuffer = new();
     private readonly object _lock = new();
     private string? _tempPromptFile;
+    private string? _tempScriptFile;
     private bool _disposed;
 
     /// <summary>Fired when stdout data is received</summary>
@@ -92,13 +93,24 @@ public class AIProcess : IDisposable
             await File.WriteAllTextAsync(tempFile, prompt, cancellationToken);
             _tempPromptFile = tempFile;
 
-    // Create a temp script file to avoid quoting issues
-    // Close stdin to prevent tools like opencode from hanging waiting for input
-    scriptFile = Path.GetTempFileName() + ".sh";
-    var scriptContent = $"#!/bin/bash\nexec < /dev/null\n{_providerConfig.ExecutablePath} {arguments} \"$(cat '{tempFile}')\"";
-    await File.WriteAllTextAsync(scriptFile, scriptContent, cancellationToken);
+            // Create a temp script file to avoid quoting issues
+            // Close stdin to prevent tools like opencode from hanging waiting for input
+            if (OperatingSystem.IsWindows())
+            {
+                scriptFile = Path.GetTempFileName() + ".bat";
+                // Windows batch file - read prompt from temp file and pass to command
+                var scriptContent = $"@echo off\ntype \"{tempFile}\" | {_providerConfig.ExecutablePath} {arguments}";
+                await File.WriteAllTextAsync(scriptFile, scriptContent, cancellationToken);
+            }
+            else
+            {
+                scriptFile = Path.GetTempFileName() + ".sh";
+                var scriptContent = $"#!/bin/bash\nexec < /dev/null\n{_providerConfig.ExecutablePath} {arguments} \"$(cat '{tempFile}')\"";
+                await File.WriteAllTextAsync(scriptFile, scriptContent, cancellationToken);
+            }
 
-            arguments = scriptFile;
+            _tempScriptFile = scriptFile;
+            arguments = OperatingSystem.IsWindows() ? $"/c \"{scriptFile}\"" : scriptFile;
             useShell = true;
         }
         else if (!_providerConfig.UsesStdin)
@@ -109,14 +121,24 @@ public class AIProcess : IDisposable
             _tempPromptFile = tempFile;
 
             // Use shell with input redirection from temp file
-            var fullCmd = $"{_providerConfig.ExecutablePath} {arguments} < '{tempFile}'";
-            arguments = $"-c \"{fullCmd}\"";
+            if (OperatingSystem.IsWindows())
+            {
+                var fullCmd = $"{_providerConfig.ExecutablePath} {arguments} < \"{tempFile}\"";
+                arguments = $"/c {fullCmd}";
+            }
+            else
+            {
+                var fullCmd = $"{_providerConfig.ExecutablePath} {arguments} < '{tempFile}'";
+                arguments = $"-c \"{fullCmd}\"";
+            }
             useShell = true;
         }
 
         var psi = new ProcessStartInfo
         {
-            FileName = useShell ? "/bin/bash" : _providerConfig.ExecutablePath,
+            FileName = useShell
+                ? (OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/bash")
+                : _providerConfig.ExecutablePath,
             Arguments = arguments,
             WorkingDirectory = _config.TargetDirectory,
             RedirectStandardInput = _providerConfig.UsesStdin,
@@ -479,6 +501,13 @@ public class AIProcess : IDisposable
         if (_tempPromptFile is not null && File.Exists(_tempPromptFile))
         {
             try { File.Delete(_tempPromptFile); }
+            catch { /* ignore */ }
+        }
+
+        // Clean up temp script file if used
+        if (_tempScriptFile is not null && File.Exists(_tempScriptFile))
+        {
+            try { File.Delete(_tempScriptFile); }
             catch { /* ignore */ }
         }
 

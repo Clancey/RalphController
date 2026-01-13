@@ -163,15 +163,34 @@ static bool IsProviderInstalled(AIProvider provider)
 
     try
     {
-        var psi = new ProcessStartInfo
+        ProcessStartInfo psi;
+        
+        if (OperatingSystem.IsWindows())
         {
-            FileName = "/bin/bash",
-            Arguments = $"-c \"which {command}\"",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+            // Windows: use PowerShell and Get-Command
+            psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -Command \"Get-Command {command} -ErrorAction SilentlyContinue\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+        }
+        else
+        {
+            // Unix/Linux/macOS: use bash and which command
+            psi = new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                Arguments = $"-c \"which {command}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+        }
 
         using var process = new Process { StartInfo = psi };
         process.Start();
@@ -385,15 +404,32 @@ static async Task<ModelSpec?> PromptForModelSpec(string label, string? defaultOl
 
 static async Task<List<string>> GetOpenCodeModels()
 {
-    var psi = new ProcessStartInfo
+    ProcessStartInfo psi;
+
+    if (OperatingSystem.IsWindows())
     {
-        FileName = "/bin/bash",
-        Arguments = "-c \"opencode models\"",
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        UseShellExecute = false,
-        CreateNoWindow = true
-    };
+        psi = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = "/c opencode models",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+    }
+    else
+    {
+        psi = new ProcessStartInfo
+        {
+            FileName = "/bin/bash",
+            Arguments = "-c \"opencode models\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+    }
 
     using var process = new Process { StartInfo = psi };
     process.Start();
@@ -614,15 +650,32 @@ if (args.Contains("--test-output"))
 
     // Test 1: Simple echo
     AnsiConsole.MarkupLine("[blue]Test 1: Simple echo command[/]");
-    var psi = new ProcessStartInfo
+    ProcessStartInfo psi;
+
+    if (OperatingSystem.IsWindows())
     {
-        FileName = "/bin/bash",
-        Arguments = "-c \"echo 'Hello from bash'\"",
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        UseShellExecute = false,
-        CreateNoWindow = true
-    };
+        psi = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = "/c echo Hello from Windows",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+    }
+    else
+    {
+        psi = new ProcessStartInfo
+        {
+            FileName = "/bin/bash",
+            Arguments = "-c \"echo 'Hello from bash'\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+    }
 
     using var process = new Process { StartInfo = psi };
     process.OutputDataReceived += (_, e) =>
@@ -646,15 +699,32 @@ if (args.Contains("--test-output"))
     var tempFile = Path.GetTempFileName();
     await File.WriteAllTextAsync(tempFile, "Say 'Hello, World!' and nothing else.");
 
-    var psi2 = new ProcessStartInfo
+    ProcessStartInfo psi2;
+
+    if (OperatingSystem.IsWindows())
     {
-        FileName = "/bin/bash",
-        Arguments = $"-c \"claude -p --dangerously-skip-permissions < '{tempFile}'\"",
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        UseShellExecute = false,
-        CreateNoWindow = true
-    };
+        psi2 = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = $"/c claude -p --dangerously-skip-permissions < \"{tempFile}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+    }
+    else
+    {
+        psi2 = new ProcessStartInfo
+        {
+            FileName = "/bin/bash",
+            Arguments = $"-c \"claude -p --dangerously-skip-permissions < '{tempFile}'\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+    }
 
     var outputLines = 0;
     var errorLines = 0;
@@ -832,15 +902,32 @@ if (listModels)
 {
     AnsiConsole.MarkupLine("[yellow]Listing available models...[/]");
 
-    var psi = new ProcessStartInfo
+    ProcessStartInfo psi;
+
+    if (OperatingSystem.IsWindows())
     {
-        FileName = "/bin/bash",
-        Arguments = "-c \"opencode models\"",
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        UseShellExecute = false,
-        CreateNoWindow = true
-    };
+        psi = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = "/c opencode models",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+    }
+    else
+    {
+        psi = new ProcessStartInfo
+        {
+            FileName = "/bin/bash",
+            Arguments = "-c \"opencode models\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+    }
 
     using var process = new Process { StartInfo = psi };
     process.Start();

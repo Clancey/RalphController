@@ -22,6 +22,14 @@ public class ConsoleUI : IDisposable
     private bool _disposed;
     private int _lastConsoleWidth;
     private int _lastConsoleHeight;
+    private bool _isInInjectMode;
+    private string _injectInput = "";
+    private int _injectStep; // 0=prompt, 1=confirm, 2=select provider, 3=select model, 4=custom model
+    private string _originalPrompt = "";
+    private List<string> _injectOptions = new();
+    private int _selectedOptionIndex;
+    private string _selectedProvider = "";
+    private ModelSpec? _selectedModel;
 
     /// <summary>
     /// Whether to automatically start the loop when RunAsync is called
@@ -107,6 +115,12 @@ public class ConsoleUI : IDisposable
 
     private Layout BuildLayout()
     {
+        // If in inject mode, show a special overlay layout
+        if (_isInInjectMode)
+        {
+            return BuildInjectLayout();
+        }
+
         var layout = new Layout("Root")
             .SplitRows(
                 new Layout("Header").Size(3),
@@ -123,6 +137,103 @@ public class ConsoleUI : IDisposable
         layout["Footer"].Update(BuildFooterPanel());
 
         return layout;
+    }
+
+    private Layout BuildInjectLayout()
+    {
+        var layout = new Layout("Root").SplitRows(
+            new Layout("Title").Size(8),
+            new Layout("Content"),
+            new Layout("Footer").Size(3)
+        );
+
+        // Title - centered INJECT text with larger display
+        var titleStyle = new Style(Color.Yellow, Color.Black).Decoration(Decoration.Bold);
+        var titlePanel = new Panel(
+            Align.Center(
+                new Text("INJECT", titleStyle).Centered(),
+                VerticalAlignment.Middle
+            )
+        )
+        .Border(BoxBorder.Double)
+        .BorderColor(Color.Yellow)
+        .Expand();
+        layout["Title"].Update(titlePanel);
+
+        // Content based on step
+        string content = _injectStep switch
+        {
+            0 => $"[bold yellow]Enter prompt to inject:[/]\n\n[yellow]> {Markup.Escape(_injectInput)}_[/]",
+            1 => BuildModelConfirmationContent(),
+            2 => BuildProviderSelectionContent(),
+            3 => BuildModelSelectionContent(),
+            4 => $"[bold yellow]Enter custom model name:[/]\n\n[yellow]Provider:[/] {Markup.Escape(_selectedProvider)}\n[yellow]> {Markup.Escape(_injectInput)}_[/]",
+            _ => ""
+        };
+        layout["Content"].Update(new Panel(new Markup(content)).Border(BoxBorder.Rounded).BorderColor(Color.Yellow).Expand());
+
+        // Footer with instructions
+        string footer = _injectStep switch
+        {
+            0 => "[dim]Type | Enter=Submit | Esc=Cancel[/]",
+            1 => "[dim]Y=Different model | N=Use current | Esc=Cancel[/]",
+            2 => "[dim]↑↓ Navigate | Enter=Select | Esc=Cancel[/]",
+            3 => "[dim]↑↓ Navigate | Enter=Select | Esc=Cancel[/]",
+            4 => "[dim]Type model name | Enter=Submit | Esc=Cancel[/]",
+            _ => ""
+        };
+        layout["Footer"].Update(new Panel(new Markup(footer).Centered()).Border(BoxBorder.Rounded).BorderColor(Color.Grey).Expand());
+
+        return layout;
+    }
+
+    private string BuildProviderSelectionContent()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("[bold yellow]Select provider:[/]");
+        sb.AppendLine();
+        for (int i = 0; i < _injectOptions.Count; i++)
+        {
+            var isSelected = i == _selectedOptionIndex;
+            var prefix = isSelected ? "[yellow]>[/] " : "  ";
+            var optionText = Markup.Escape(_injectOptions[i]);
+            var formattedOption = isSelected ? $"[bold yellow]{optionText}[/]" : optionText;
+            sb.AppendLine($"{prefix}{formattedOption}");
+        }
+        return sb.ToString();
+    }
+
+    private string BuildModelSelectionContent()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"[bold yellow]Select {Markup.Escape(_selectedProvider)} model:[/]");
+        sb.AppendLine();
+        int visibleStart = Math.Max(0, _selectedOptionIndex - 4);
+        int visibleEnd = Math.Min(_injectOptions.Count, _selectedOptionIndex + 5);
+        for (int i = visibleStart; i < visibleEnd; i++)
+        {
+            var isSelected = i == _selectedOptionIndex;
+            var prefix = isSelected ? "[yellow]>[/] " : "  ";
+            var optionText = Markup.Escape(_injectOptions[i]);
+            var formattedOption = isSelected ? $"[bold yellow]{optionText}[/]" : optionText;
+            sb.AppendLine($"{prefix}{formattedOption}");
+        }
+        if (_injectOptions.Count > 8)
+        {
+            sb.AppendLine($"[dim]... ({_injectOptions.Count - 8} more)[/]");
+        }
+        return sb.ToString();
+    }
+
+    private string BuildModelConfirmationContent()
+    {
+        var currentModel = _controller.ModelSelector.GetCurrentModel();
+        var modelName = currentModel?.DisplayName ?? _config.Provider.ToString();
+        var safePrompt = string.IsNullOrEmpty(_originalPrompt) ? "(empty)" : _originalPrompt;
+        var promptPreview = safePrompt.Length > 60
+            ? safePrompt[..60] + "..."
+            : safePrompt;
+        return $"[bold yellow]Current model:[/] [green]{Markup.Escape(modelName)}[/]\n\n[yellow]Your prompt:[/] {Markup.Escape(promptPreview)}\n\n[bold]Use different model?[/] [dim](Y/N)[/]";
     }
 
     private Panel BuildHeaderPanel()
@@ -251,6 +362,14 @@ public class ConsoleUI : IDisposable
 
     private async Task HandleKeyAsync(ConsoleKeyInfo key)
     {
+        // Handle inject mode input
+        if (_isInInjectMode)
+        {
+            await HandleInjectInput(key);
+            return;
+        }
+
+        // Normal mode handling
         switch (char.ToLower(key.KeyChar))
         {
             case 'p':
@@ -294,7 +413,7 @@ public class ConsoleUI : IDisposable
                 break;
 
             case 'i':
-                await HandleInjectAsync();
+                StartInjectMode();
                 break;
 
             case 'q':
@@ -313,122 +432,222 @@ public class ConsoleUI : IDisposable
         }
     }
 
-    private async Task HandleInjectAsync()
+    private void StartInjectMode()
     {
-        AnsiConsole.Clear();
+        _isInInjectMode = true;
+        _injectStep = 0;
+        _injectInput = "";
+        _originalPrompt = "";
+        _selectedOptionIndex = 0;
+        _selectedProvider = "";
+        _selectedModel = null;
+        _injectOptions = new List<string>();
+    }
 
-        // Step 1: Get the prompt to inject
-        var prompt = AnsiConsole.Prompt(
-            new TextPrompt<string>("[yellow]Enter prompt to inject (or empty to cancel):[/]")
-                .AllowEmpty());
+    private void EndInjectMode()
+    {
+        _isInInjectMode = false;
+        _injectStep = 0;
+        _injectInput = "";
+        _originalPrompt = "";
+        _selectedOptionIndex = 0;
+        _selectedProvider = "";
+        _selectedModel = null;
+        _injectOptions = new List<string>();
+    }
 
-        if (string.IsNullOrWhiteSpace(prompt))
+    private async Task HandleInjectInput(ConsoleKeyInfo key)
+    {
+        // Handle Escape to cancel
+        if (key.Key == ConsoleKey.Escape)
         {
-            return; // Cancelled
+            EndInjectMode();
+            return;
         }
 
-        // Step 2: Ask about model selection
-        var useDifferentModel = AnsiConsole.Confirm(
-            "[yellow]Use a different model for this injection?[/]",
-            defaultValue: false);
-
-        if (useDifferentModel)
+        // Handle Enter based on step
+        if (key.Key == ConsoleKey.Enter)
         {
-            // Get available providers
-            var providers = Enum.GetValues<AIProvider>()
-                .Cast<AIProvider>()
-                .ToList();
+            await SubmitInjectStep();
+            return;
+        }
 
-            var providerChoice = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]Select provider:[/]")
-                    .AddChoices(providers.Select(p => p.ToString()).ToArray()));
-
-            var selectedProvider = Enum.Parse<AIProvider>(providerChoice);
-
-            // Get model name based on provider
-            string modelName;
-            switch (selectedProvider)
+        // Step 0: Text input for prompt
+        if (_injectStep == 0)
+        {
+            if (key.Key == ConsoleKey.Backspace)
             {
-                case AIProvider.Claude:
-                    modelName = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[yellow]Enter Claude model (e.g., sonnet, opus):[/]")
-                            .DefaultValue("sonnet"));
-                    break;
-
-                case AIProvider.Codex:
-                    modelName = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[yellow]Enter Codex model (e.g., o3, gpt-5.2-codex):[/]")
-                            .DefaultValue("o3"));
-                    break;
-
-                case AIProvider.Copilot:
-                    modelName = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[yellow]Enter Copilot model (e.g., gpt-5, gpt-5-mini):[/]")
-                            .DefaultValue("gpt-5"));
-                    break;
-
-                case AIProvider.Gemini:
-                    modelName = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[yellow]Enter Gemini model (e.g., gemini-2.5-pro):[/]")
-                            .DefaultValue("gemini-2.5-pro"));
-                    break;
-
-                case AIProvider.Cursor:
-                    modelName = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[yellow]Enter Cursor model (e.g., claude-sonnet):[/]")
-                            .DefaultValue("claude-sonnet"));
-                    break;
-
-                case AIProvider.OpenCode:
-                    modelName = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[yellow]Enter OpenCode model (e.g., opencode/llama3.1:70b):[/]")
-                            .DefaultValue("opencode/llama3.1:70b"));
-                    break;
-
-                case AIProvider.Ollama:
-                    var ollamaModel = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[yellow]Enter Ollama model (e.g., llama3.1:8b):[/]")
-                            .DefaultValue("llama3.1:8b"));
-                    var ollamaUrl = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[yellow]Ollama API URL (or Enter for localhost):[/]")
-                            .DefaultValue("http://localhost:11434"));
-
-                    var modelSpec = new ModelSpec
-                    {
-                        Provider = selectedProvider,
-                        Model = ollamaModel,
-                        BaseUrl = ollamaUrl,
-                        Label = ollamaModel
-                    };
-
-                    _controller.InjectPrompt(prompt, modelSpec);
-                    AddOutputLine($"[yellow]>>> Injected with model: {Markup.Escape($"{selectedProvider}/{ollamaModel}")}[/]");
-                    AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(prompt.Length > 50 ? prompt[..50] + "..." : prompt)}[/]");
-                    return;
-
-                default:
-                    modelName = "default";
-                    break;
+                if (_injectInput.Length > 0)
+                    _injectInput = _injectInput[..^1];
             }
-
-            var model = new ModelSpec
+            else if (!char.IsControl(key.KeyChar))
             {
-                Provider = selectedProvider,
-                Model = modelName,
-                Label = modelName
-            };
-
-            _controller.InjectPrompt(prompt, model);
-            AddOutputLine($"[yellow]>>> Injected with model: {Markup.Escape($"{selectedProvider}/{modelName}")}[/]");
+                _injectInput += key.KeyChar;
+            }
+            return;
         }
-        else
+
+        // Step 1: Y/N confirmation
+        if (_injectStep == 1)
         {
-            // Use current model, just inject prompt
-            _controller.InjectPrompt(prompt);
+            char c = char.ToLower(key.KeyChar);
+            if (c == 'y')
+            {
+                // Move to provider selection
+                _injectStep = 2;
+                _selectedOptionIndex = 0;
+                PopulateProviderOptions();
+            }
+            else if (c == 'n')
+            {
+                // Use current model
+                _controller.InjectPrompt(_originalPrompt);
+                AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(_originalPrompt.Length > 50 ? _originalPrompt[..50] + "..." : _originalPrompt)}[/]");
+                EndInjectMode();
+            }
+            return;
         }
 
-        AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(prompt.Length > 50 ? prompt[..50] + "..." : prompt)}[/]");
+        // Step 4: Custom model name input
+        if (_injectStep == 4)
+        {
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (_injectInput.Length > 0)
+                    _injectInput = _injectInput[..^1];
+            }
+            else if (!char.IsControl(key.KeyChar))
+            {
+                _injectInput += key.KeyChar;
+            }
+            return;
+        }
+
+        // Steps 2 & 3: Arrow key navigation
+        if (_injectStep == 2 || _injectStep == 3)
+        {
+            if (key.Key == ConsoleKey.UpArrow || key.Key == ConsoleKey.LeftArrow)
+            {
+                _selectedOptionIndex = Math.Max(0, _selectedOptionIndex - 1);
+            }
+            else if (key.Key == ConsoleKey.DownArrow || key.Key == ConsoleKey.RightArrow)
+            {
+                _selectedOptionIndex = Math.Min(_injectOptions.Count - 1, _selectedOptionIndex + 1);
+            }
+            return;
+        }
+    }
+
+    private void PopulateProviderOptions()
+    {
+        _injectOptions = new List<string>
+        {
+            "Claude",
+            "Codex",
+            "Copilot",
+            "Gemini",
+            "Cursor",
+            "OpenCode",
+            "Ollama"
+        };
+    }
+
+    private async Task PopulateModelOptionsAsync()
+    {
+        _injectOptions = new List<string>();
+        _selectedOptionIndex = 0;
+
+        switch (_selectedProvider)
+        {
+            case "Claude":
+                _injectOptions.AddRange(new[] { "sonnet", "opus", "haiku", "Enter custom..." });
+                break;
+            case "Codex":
+                _injectOptions.AddRange(new[] { "o3", "o1", "gpt-5.2-codex", "gpt-5.1-codex", "Enter custom..." });
+                break;
+            case "Copilot":
+                _injectOptions.AddRange(new[] { "gpt-5", "gpt-5-mini", "gpt-5.1", "claude-sonnet-4", "Enter custom..." });
+                break;
+            case "Gemini":
+                _injectOptions.AddRange(new[] { "gemini-2.5-pro", "gemini-2.0-flash", "Enter custom..." });
+                break;
+            case "Cursor":
+                _injectOptions.AddRange(new[] { "claude-sonnet", "claude-opus", "gpt-4o", "Enter custom..." });
+                break;
+            case "OpenCode":
+                _injectOptions.AddRange(new[] { "ollama/llama3.1:70b", "ollama/deepseek-r1:32b", "ollama/qwen2.5:72b", "Enter custom..." });
+                break;
+            case "Ollama":
+                _injectOptions.AddRange(new[] { "llama3.1:8b", "llama3.1:70b", "deepseek-r1:32b", "qwen2.5:72b", "Enter custom..." });
+                break;
+        }
+    }
+
+    private async Task SubmitInjectStep()
+    {
+        switch (_injectStep)
+        {
+            case 0: // Prompt entry complete
+                if (!string.IsNullOrWhiteSpace(_injectInput))
+                {
+                    _originalPrompt = _injectInput;
+                    _injectInput = "";
+                    _injectStep = 1;
+                }
+                else
+                {
+                    EndInjectMode();
+                }
+                break;
+
+            case 2: // Provider selected
+                _selectedProvider = _injectOptions[_selectedOptionIndex];
+                _injectStep = 3;
+                _selectedOptionIndex = 0;
+                await PopulateModelOptionsAsync();
+                break;
+
+            case 3: // Model selected
+                var modelName = _injectOptions[_selectedOptionIndex];
+                if (modelName == "Enter custom...")
+                {
+                    // Move to custom model input
+                    _injectStep = 4;
+                    _injectInput = "";
+                }
+                else
+                {
+                    var provider = Enum.Parse<AIProvider>(_selectedProvider, true);
+                    _selectedModel = new ModelSpec
+                    {
+                        Provider = provider,
+                        Model = modelName,
+                        Label = modelName
+                    };
+                    _controller.InjectPrompt(_originalPrompt, _selectedModel);
+                    AddOutputLine($"[yellow]>>> Injected with model: {Markup.Escape($"{_selectedProvider}/{modelName}")}[/]");
+                    AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(_originalPrompt.Length > 50 ? _originalPrompt[..50] + "..." : _originalPrompt)}[/]");
+                    EndInjectMode();
+                }
+                break;
+
+            case 4: // Custom model name entered
+                if (!string.IsNullOrWhiteSpace(_injectInput))
+                {
+                    var provider = Enum.Parse<AIProvider>(_selectedProvider, true);
+                    _selectedModel = new ModelSpec
+                    {
+                        Provider = provider,
+                        Model = _injectInput,
+                        Label = _injectInput
+                    };
+                    _controller.InjectPrompt(_originalPrompt, _selectedModel);
+                    AddOutputLine($"[yellow]>>> Injected with model: {Markup.Escape($"{_selectedProvider}/{_injectInput}")}[/]");
+                    AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(_originalPrompt.Length > 50 ? _originalPrompt[..50] + "..." : _originalPrompt)}[/]");
+                    EndInjectMode();
+                }
+                break;
+        }
     }
 
     private void AddOutputLine(string line, bool isRawOutput = false, bool isError = false)

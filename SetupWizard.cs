@@ -67,6 +67,7 @@ public class SetupWizard
     private readonly Func<Task<List<string>>> _getCursorModels;
     private readonly Func<Task<List<string>>> _getOpenCodeModels;
     private readonly Func<string, Task<List<string>>> _getOllamaModels;
+    private readonly Func<AIProvider, bool> _isProviderInstalled;
 
     public WizardState State { get; } = new();
 
@@ -80,7 +81,8 @@ public class SetupWizard
         Func<Task<List<string>>> getGeminiModels,
         Func<Task<List<string>>> getCursorModels,
         Func<Task<List<string>>> getOpenCodeModels,
-        Func<string, Task<List<string>>> getOllamaModels)
+        Func<string, Task<List<string>>> getOllamaModels,
+        Func<AIProvider, bool> isProviderInstalled)
     {
         _projectSettings = projectSettings;
         _globalSettings = globalSettings;
@@ -92,6 +94,7 @@ public class SetupWizard
         _getCursorModels = getCursorModels;
         _getOpenCodeModels = getOpenCodeModels;
         _getOllamaModels = getOllamaModels;
+        _isProviderInstalled = isProviderInstalled;
 
         // Initialize from saved settings
         State.OllamaUrl = globalSettings.LastOllamaUrl ?? "http://localhost:11434";
@@ -217,7 +220,7 @@ public class SetupWizard
 
     private async Task<(WizardStep, bool)> ModelDiscoveryStepAsync()
     {
-        AnsiConsole.MarkupLine("\n[dim]Discovering models from all available providers...[/]");
+        AnsiConsole.MarkupLine("\n[dim]Discovering models from installed providers...[/]");
 
         State.AvailableModels.Clear();
 
@@ -226,54 +229,69 @@ public class SetupWizard
             .StartAsync("Discovering models...", async ctx =>
             {
                 // Claude
-                ctx.Status("Checking Claude...");
-                try
+                if (_isProviderInstalled(AIProvider.Claude))
                 {
-                    var models = await _getClaudeModels();
-                    foreach (var m in models)
-                        State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Claude, Model = m });
+                    ctx.Status("Checking Claude...");
+                    try
+                    {
+                        var models = await _getClaudeModels();
+                        foreach (var m in models)
+                            State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Claude, Model = m });
+                    }
+                    catch { }
                 }
-                catch { }
 
                 // Codex
-                ctx.Status("Checking Codex...");
-                try
+                if (_isProviderInstalled(AIProvider.Codex))
                 {
-                    var models = await _getCodexModels();
-                    foreach (var m in models)
-                        State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Codex, Model = m });
+                    ctx.Status("Checking Codex...");
+                    try
+                    {
+                        var models = await _getCodexModels();
+                        foreach (var m in models)
+                            State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Codex, Model = m });
+                    }
+                    catch { }
                 }
-                catch { }
 
                 // Copilot
-                ctx.Status("Checking Copilot...");
-                try
+                if (_isProviderInstalled(AIProvider.Copilot))
                 {
-                    var models = await _getCopilotModels();
-                    foreach (var m in models)
-                        State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Copilot, Model = m });
+                    ctx.Status("Checking Copilot...");
+                    try
+                    {
+                        var models = await _getCopilotModels();
+                        foreach (var m in models)
+                            State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Copilot, Model = m });
+                    }
+                    catch { }
                 }
-                catch { }
 
                 // Gemini
-                ctx.Status("Checking Gemini...");
-                try
+                if (_isProviderInstalled(AIProvider.Gemini))
                 {
-                    var models = await _getGeminiModels();
-                    foreach (var m in models)
-                        State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Gemini, Model = m });
+                    ctx.Status("Checking Gemini...");
+                    try
+                    {
+                        var models = await _getGeminiModels();
+                        foreach (var m in models)
+                            State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Gemini, Model = m });
+                    }
+                    catch { }
                 }
-                catch { }
 
                 // Cursor
-                ctx.Status("Checking Cursor...");
-                try
+                if (_isProviderInstalled(AIProvider.Cursor))
                 {
-                    var models = await _getCursorModels();
-                    foreach (var m in models)
-                        State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Cursor, Model = m });
+                    ctx.Status("Checking Cursor...");
+                    try
+                    {
+                        var models = await _getCursorModels();
+                        foreach (var m in models)
+                            State.AvailableModels.Add(new ModelSpec { Provider = AIProvider.Cursor, Model = m });
+                    }
+                    catch { }
                 }
-                catch { }
 
                 // OpenCode
                 ctx.Status("Checking OpenCode...");

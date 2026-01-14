@@ -160,7 +160,7 @@ static bool IsProviderInstalled(AIProvider provider)
         AIProvider.Gemini => "gemini",
         AIProvider.Cursor => "cursor",
         AIProvider.OpenCode => "opencode",
-        AIProvider.Ollama => null,  // Ollama uses HTTP, not CLI - always available
+        AIProvider.Ollama => null,  // Ollama uses HTTP, not CLI - always available if URL works
         _ => null
     };
 
@@ -169,10 +169,9 @@ static bool IsProviderInstalled(AIProvider provider)
     try
     {
         ProcessStartInfo psi;
-        
+
         if (OperatingSystem.IsWindows())
         {
-            // Windows: use PowerShell and Get-Command
             psi = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
@@ -185,7 +184,6 @@ static bool IsProviderInstalled(AIProvider provider)
         }
         else
         {
-            // Unix/Linux/macOS: use bash and which command
             psi = new ProcessStartInfo
             {
                 FileName = "/bin/bash",
@@ -840,7 +838,8 @@ if (!noTui && (freshMode || projectSettings.Collaboration == null || projectSett
         GetGeminiModels,
         GetCursorModels,
         GetOpenCodeModels,
-        GetOllamaModels);
+        GetOllamaModels,
+        IsProviderInstalled);
 
     var wizardState = await wizard.RunAsync();
 

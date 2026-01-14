@@ -239,6 +239,119 @@ public class WorkflowOrchestrator : IDisposable
     }
 
     /// <summary>
+    /// Run ONLY the Planner step to analyze a task and create an implementation plan.
+    /// This is used by the hybrid approach: Planner → Main AI Execution → Reviewer
+    /// </summary>
+    public async Task<string?> RunPlannerOnlyAsync(string taskPrompt, CancellationToken ct = default)
+    {
+        try
+        {
+            // Initialize a minimal workflow context if not already set
+            _currentWorkflow ??= new CollaborationWorkflow
+            {
+                Type = WorkflowType.Spec,
+                OriginalRequest = "Planner-only execution",
+                Status = WorkflowStatus.InProgress,
+                StartedAt = DateTime.UtcNow
+            };
+
+            OnOutput?.Invoke("▶ [Planner] Analyzing task and creating implementation plan...");
+
+            var plannerStep = await RunAgentStepAsync(
+                AgentRole.Planner,
+                BuildTaskPlannerPrompt(taskPrompt),
+                ct,
+                stepLabel: "Planner");
+
+            OnOutput?.Invoke($"  ✓ Planner complete ({plannerStep.ModelName})");
+            return plannerStep.Response;
+        }
+        catch (Exception ex)
+        {
+            OnError?.Invoke($"Planner failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Run ONLY the Reviewer step to check implementation results.
+    /// This is used after the main AI execution to verify changes.
+    /// </summary>
+    public async Task<(bool approved, string? feedback, List<string> issues)> RunReviewerOnlyAsync(
+        string originalTask,
+        string implementationOutput,
+        List<string> modifiedFiles,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            // Initialize a minimal workflow context if not already set
+            _currentWorkflow ??= new CollaborationWorkflow
+            {
+                Type = WorkflowType.Review,
+                OriginalRequest = "Reviewer-only execution",
+                Status = WorkflowStatus.InProgress,
+                StartedAt = DateTime.UtcNow
+            };
+
+            OnOutput?.Invoke("▶ [Reviewer] Checking implementation...");
+
+            var reviewerStep = await RunAgentStepAsync(
+                AgentRole.Reviewer,
+                BuildPostExecutionReviewPrompt(originalTask, implementationOutput, modifiedFiles),
+                ct,
+                stepLabel: "Reviewer");
+
+            OnOutput?.Invoke($"  ✓ Reviewer complete ({reviewerStep.ModelName})");
+
+            var issues = ExtractReviewIssues(reviewerStep.Response!);
+            var approved = issues.Count == 0 ||
+                          reviewerStep.Response!.Contains("APPROVED", StringComparison.OrdinalIgnoreCase);
+
+            if (approved)
+                OnOutput?.Invoke("  ✓ Implementation APPROVED by reviewer");
+            else
+                OnOutput?.Invoke($"  ⚠ Reviewer found {issues.Count} issue(s)");
+
+            return (approved, reviewerStep.Response, issues);
+        }
+        catch (Exception ex)
+        {
+            OnError?.Invoke($"Reviewer failed: {ex.Message}");
+            return (true, null, new List<string>()); // Don't block on reviewer failure
+        }
+    }
+
+    private string BuildPostExecutionReviewPrompt(string originalTask, string output, List<string> files)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## Post-Implementation Review");
+        sb.AppendLine();
+        sb.AppendLine("You are the REVIEWER agent. Check if the implementation correctly addresses the task.");
+        sb.AppendLine();
+        sb.AppendLine("### Original Task:");
+        sb.AppendLine(originalTask);
+        sb.AppendLine();
+        sb.AppendLine("### Implementation Output:");
+        sb.AppendLine(output.Length > 3000 ? output[..3000] + "\n...[truncated]" : output);
+        sb.AppendLine();
+        if (files.Count > 0)
+        {
+            sb.AppendLine("### Files Modified:");
+            foreach (var file in files.Take(20))
+                sb.AppendLine($"- {file}");
+        }
+        sb.AppendLine();
+        sb.AppendLine("### Review Checklist:");
+        sb.AppendLine("1. Does the implementation address the original task?");
+        sb.AppendLine("2. Are there any obvious errors or issues?");
+        sb.AppendLine("3. Is anything missing that was requested?");
+        sb.AppendLine();
+        sb.AppendLine("Respond with APPROVED if the implementation looks correct, or CHANGES REQUESTED with specific issues.");
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// Run a collaborative task workflow for each iteration
     /// Planner → Implementer → Reviewer (→ loop if issues found)
     /// </summary>
@@ -248,8 +361,8 @@ public class WorkflowOrchestrator : IDisposable
         int maxReviewCycles = 2,
         CancellationToken ct = default)
     {
-        // Reset model rotation for fresh provider distribution
-        ResetRoleRotation();
+        // NOTE: Do NOT reset rotation here - we want models to rotate ACROSS iterations
+        // Each iteration should use different models from the pool
 
         _currentWorkflow = new CollaborationWorkflow
         {
@@ -1723,6 +1836,16 @@ public class WorkflowOrchestrator : IDisposable
     }
 
     #endregion
+
+    /// <summary>
+    /// Reset model rotation for a new session (call at start of loop, not per iteration)
+    /// This shuffles the provider order and resets all counters
+    /// </summary>
+    public void ResetForNewSession()
+    {
+        ResetRoleRotation();
+        OnOutput?.Invoke("[Collaboration] Model rotation reset for new session");
+    }
 
     public void Dispose()
     {

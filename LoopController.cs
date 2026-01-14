@@ -294,6 +294,9 @@ public class LoopController : IDisposable
     {
         OnOutput?.Invoke("[Loop] Starting main loop...");
 
+        // Reset model rotation for fresh session (shuffles providers, resets counters)
+        _workflowOrchestrator?.ResetForNewSession();
+
         while (!cancellationToken.IsCancellationRequested)
         {
             // Check if we should stop
@@ -518,7 +521,7 @@ public class LoopController : IDisposable
             prompt = await GetPromptAsync();
         }
 
-        // Check if we should use collaborative task workflow
+        // Check if we should use full multi-agent workflow (Planner → Implementer → Reviewer)
         // (not during final verification or workflow verification - those have their own flows)
         if (_config.Collaboration?.Enabled == true &&
             _workflowOrchestrator != null &&
@@ -526,65 +529,87 @@ public class LoopController : IDisposable
             !_inFinalVerification &&
             !_pendingWorkflowVerification)
         {
-            // Run collaborative task workflow: Planner → Implementer → Reviewer
-            var taskResult = await _workflowOrchestrator.RunTaskWorkflowAsync(
+            // Run the FULL task workflow: Planner → Implementer → Reviewer
+            // Each agent is a real AI process that can modify files
+            var workflowResult = await _workflowOrchestrator.RunTaskWorkflowAsync(
                 prompt,
                 _config.TargetDirectory,
                 maxReviewCycles: 2,
                 ct: cancellationToken);
 
-            // Process the result
-            _statistics.CompleteIteration(taskResult.Success);
-
-            if (taskResult.Success)
+            if (workflowResult.Success)
             {
-                // Check for completion signals in the output
-                if (taskResult.ImplementerOutput != null)
-                {
-                    var taskAIResult = new AIResult
-                    {
-                        Success = taskResult.Success,
-                        ExitCode = 0,
-                        Output = taskResult.ImplementerOutput,
-                        Error = ""
-                    };
-                    var analysis = _responseAnalyzer.Analyze(taskAIResult);
-                    if (analysis.ShouldExit && _config.AutoExitOnCompletion)
-                    {
-                        OnOutput?.Invoke($"[Analysis] Completion signal detected: {analysis.ExitReason}");
+                // Workflow completed successfully - commit changes to git
+                OnOutput?.Invoke("");
+                OnOutput?.Invoke("▶ [Git] Committing approved changes...");
 
-                        // Use workflow verification for final check
-                        if (_config.Collaboration?.Verification?.Enabled == true)
-                        {
-                            _pendingWorkflowVerification = true;
-                            _workflowVerificationContext = $"Task completed: {analysis.ExitReason}";
-                            OnOutput?.Invoke(">>> Scheduling multi-agent verification workflow...");
-                        }
-                        else if (_config.EnableFinalVerification)
-                        {
-                            _pendingFinalVerification = true;
-                            OnOutput?.Invoke(">>> Scheduling final verification...");
-                        }
-                        else
-                        {
-                            Stop();
-                        }
+                var commitSuccess = await CommitChangesToGitAsync(
+                    workflowResult.FilesModified,
+                    prompt,
+                    cancellationToken);
+
+                if (commitSuccess)
+                {
+                    OnOutput?.Invoke("  ✓ Changes committed to git");
+                }
+                else
+                {
+                    OnOutput?.Invoke("  ⚠ Git commit skipped (no changes or git not available)");
+                }
+
+                // Record successful iteration
+                _statistics.CompleteIteration(true);
+                var successResult = new AIResult
+                {
+                    Success = true,
+                    Output = workflowResult.ImplementerOutput ?? "",
+                    Error = "",
+                    ExitCode = 0
+                };
+                OnIterationComplete?.Invoke(_statistics.CurrentIteration, successResult);
+
+                // Check for completion signals in the implementer output
+                if (!string.IsNullOrEmpty(workflowResult.ImplementerOutput))
+                {
+                    var analysis = _responseAnalyzer.Analyze(successResult);
+                    if (analysis.ShouldExit)
+                    {
+                        OnOutput?.Invoke($"[Task Complete] {analysis.ExitReason}");
+                        Stop();
                     }
                 }
-
-                // Feed task issues to circuit breaker
-                if (taskResult.IssuesFound.Count == 0)
+                return;
+            }
+            else if (workflowResult.NeedsMoreWork)
+            {
+                // Workflow found issues - continue to next iteration
+                OnOutput?.Invoke("[Workflow] Issues found - will continue in next iteration");
+                _statistics.CompleteIteration(true);
+                var partialResult = new AIResult
                 {
-                    _circuitBreaker.RecordSuccess();
-                }
+                    Success = true,
+                    Output = workflowResult.ReviewerFeedback ?? "",
+                    Error = "",
+                    ExitCode = 0
+                };
+                OnIterationComplete?.Invoke(_statistics.CurrentIteration, partialResult);
+                return;
             }
             else
             {
-                // Task had issues - might need to continue
-                OnOutput?.Invoke($"[Task] Workflow completed with {taskResult.IssuesFound.Count} remaining issue(s)");
+                // Workflow failed - record and continue
+                OnError?.Invoke("[Workflow] Task workflow failed");
+                _statistics.CompleteIteration(false);
+                var failResult = new AIResult
+                {
+                    Success = false,
+                    Output = workflowResult.Workflow?.Error ?? "",
+                    Error = workflowResult.Workflow?.Error ?? "Task workflow failed",
+                    ExitCode = 1
+                };
+                OnIterationComplete?.Invoke(_statistics.CurrentIteration, failResult);
+                return;
             }
-
-            return;
         }
 
         // Get current provider from ModelSelector (handles multi-model)
@@ -829,6 +854,10 @@ public class LoopController : IDisposable
         // Count modified files for circuit breaker and verification
         var filesModified = CountModifiedFiles();
 
+        // Note: When collaboration is enabled, the full task workflow (Planner → Implementer → Reviewer)
+        // handles everything including review and git commit, so this code path is only for
+        // single-agent mode (collaboration disabled)
+
         // Record result with circuit breaker
         if (_config.EnableCircuitBreaker)
         {
@@ -861,7 +890,7 @@ public class LoopController : IDisposable
         if (_inFinalVerification)
         {
             _inFinalVerification = false;
-            var verificationResult = FinalVerification.ParseVerificationResult(result.Output);
+            var verificationResult = FinalVerification.ParseVerificationResult(result.Output ?? "");
 
             if (verificationResult != null)
             {
@@ -921,7 +950,8 @@ public class LoopController : IDisposable
                 if (_config.Collaboration?.Verification?.Enabled == true && _workflowOrchestrator != null)
                 {
                     _pendingWorkflowVerification = true;
-                    var outputSummary = result.Output.Length > 1000 ? result.Output[..1000] + "..." : result.Output;
+                    var output = result.Output ?? "";
+                    var outputSummary = output.Length > 1000 ? output[..1000] + "..." : output;
                     _workflowVerificationContext = $"Completion detected: {analysis.ExitReason}\n\nOutput summary:\n{outputSummary}";
                     _responseAnalyzer.Reset();
                     _circuitBreaker.Reset();
@@ -1093,6 +1123,129 @@ public class LoopController : IDisposable
         catch
         {
             return 0;
+        }
+    }
+
+    private List<string> GetModifiedFilesList()
+    {
+        var files = new List<string>();
+        try
+        {
+            var statusPsi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "status --porcelain",
+                WorkingDirectory = _config.TargetDirectory,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var statusProcess = System.Diagnostics.Process.Start(statusPsi);
+            if (statusProcess is not null)
+            {
+                var output = statusProcess.StandardOutput.ReadToEnd();
+                statusProcess.WaitForExit();
+
+                foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    // Git status format: XY filename
+                    // Skip the first 3 characters (status + space)
+                    if (line.Length > 3)
+                    {
+                        files.Add(line[3..].Trim());
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Ignore git errors
+        }
+        return files;
+    }
+
+    /// <summary>
+    /// Commit changes to git with a generated commit message
+    /// </summary>
+    private async Task<bool> CommitChangesToGitAsync(
+        List<string> modifiedFiles,
+        string taskDescription,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Check if there are changes to commit
+            var statusPsi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "status --porcelain",
+                WorkingDirectory = _config.TargetDirectory,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var statusProcess = System.Diagnostics.Process.Start(statusPsi);
+            if (statusProcess is null) return false;
+
+            var statusOutput = await statusProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            await statusProcess.WaitForExitAsync(cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(statusOutput))
+            {
+                // No changes to commit
+                return false;
+            }
+
+            // Stage all changes
+            var addPsi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "add -A",
+                WorkingDirectory = _config.TargetDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var addProcess = System.Diagnostics.Process.Start(addPsi);
+            if (addProcess is null) return false;
+
+            await addProcess.WaitForExitAsync(cancellationToken);
+            if (addProcess.ExitCode != 0) return false;
+
+            // Generate commit message
+            var fileCount = modifiedFiles.Count > 0 ? modifiedFiles.Count : statusOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+            var taskSummary = taskDescription.Length > 100
+                ? taskDescription[..100].Replace("\n", " ").Trim() + "..."
+                : taskDescription.Replace("\n", " ").Trim();
+
+            var commitMessage = $"[Ralph] {taskSummary}\n\nModified {fileCount} file(s) via multi-agent workflow.";
+
+            // Commit changes
+            var commitPsi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = $"commit -m \"{commitMessage.Replace("\"", "\\\"")}\"",
+                WorkingDirectory = _config.TargetDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var commitProcess = System.Diagnostics.Process.Start(commitPsi);
+            if (commitProcess is null) return false;
+
+            await commitProcess.WaitForExitAsync(cancellationToken);
+            return commitProcess.ExitCode == 0;
+        }
+        catch (Exception ex)
+        {
+            OnError?.Invoke($"[Git] Commit failed: {ex.Message}");
+            return false;
         }
     }
 

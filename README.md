@@ -794,7 +794,12 @@ With this config, Ralph automatically:
 }
 ```
 
-### Model Selection Priority
+### Model Selection (Automatic by Default)
+
+By default, Ralph uses **automatic tier-based selection**:
+- Models are selected at runtime from your `multiModel.models` list
+- Each role gets models filtered by its required tier (Expert/Capable/Fast)
+- No manual configuration needed - just add your models and Ralph figures out the rest
 
 The system uses the following priority for selecting models:
 
@@ -803,7 +808,33 @@ The system uses the following priority for selecting models:
 3. **Global pool by tier** - All models from `multiModel.models`, filtered by required tier
 4. **Default provider** - Falls back to the configured provider
 
-**Note**: You don't need to pre-assign models to roles. Just configure your available models in `multiModel.models` and Ralph will automatically select appropriate models based on tier requirements.
+### Manual Agent Configuration (Optional)
+
+If you want to override the automatic selection for specific roles, configure agents manually in `.ralph.json`:
+
+```json
+{
+  "collaboration": {
+    "enabled": true,
+    "agents": {
+      "Planner": {
+        "model": { "provider": "Claude", "model": "opus" }
+      },
+      "Implementer": {
+        "modelPool": [
+          { "provider": "Claude", "model": "sonnet" },
+          { "provider": "Gemini", "model": "gemini-2.5-pro" }
+        ]
+      },
+      "Reviewer": {
+        "model": { "provider": "Ollama", "model": "qwen3-coder:30b", "baseUrl": "http://localhost:11434" }
+      }
+    }
+  }
+}
+```
+
+Roles not configured in `agents` will use automatic tier-based selection from your model pool.
 
 ### Parallel Execution
 

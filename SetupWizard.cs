@@ -14,7 +14,6 @@ public enum WizardStep
     ModelDiscovery,
     ModelSelection,
     PrimaryModel,
-    RoleSetup,
     WorkflowConfig,
     ProviderSelection,
     ProviderModelSelection,
@@ -33,8 +32,6 @@ public class WizardState
     public List<ModelSpec> AvailableModels { get; set; } = new();
     public List<ModelSpec> SelectedModels { get; set; } = new();
     public ModelSpec? PrimaryModel { get; set; }
-    public string RoleSetupChoice { get; set; } = "Auto-assign";
-    public Dictionary<AgentRole, ModelSpec> RoleAssignments { get; set; } = new();
     public WorkflowType SelectedWorkflow { get; set; } = WorkflowType.Verification;
     public CollaborationConfig? Collaboration { get; set; }
     public AIProvider Provider { get; set; } = AIProvider.Claude;
@@ -136,7 +133,6 @@ public class SetupWizard
             WizardStep.ModelDiscovery => await ModelDiscoveryStepAsync(),
             WizardStep.ModelSelection => await ModelSelectionStepAsync(),
             WizardStep.PrimaryModel => await PrimaryModelStepAsync(),
-            WizardStep.RoleSetup => await RoleSetupStepAsync(),
             WizardStep.WorkflowConfig => await WorkflowConfigStepAsync(),
             WizardStep.ProviderSelection => await ProviderSelectionStepAsync(),
             WizardStep.ProviderModelSelection => await ProviderModelSelectionStepAsync(),
@@ -450,120 +446,10 @@ public class SetupWizard
             }
         }
 
-        return Task.FromResult((WizardStep.RoleSetup, false));
-    }
-
-    private Task<(WizardStep, bool)> RoleSetupStepAsync()
-    {
-        AnsiConsole.WriteLine();
-
-        var choices = new List<string>
-        {
-            "Auto-assign roles based on model strengths (recommended)",
-            "Manually assign models to each role",
-            "Use all models in round-robin rotation",
-            BackOption
-        };
-
-        var choice = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[yellow]How would you like to assign models to roles?[/]")
-                .AddChoices(choices));
-
-        if (choice == BackOption)
-            return Task.FromResult((WizardStep.PrimaryModel, true));
-
-        State.RoleSetupChoice = choice;
-
-        // Set up collaboration config based on choice
+        // Set up collaboration with automatic tier-based selection (no manual agent assignment)
         State.Collaboration = new CollaborationConfig { Enabled = true };
 
-        if (choice.StartsWith("Auto-assign"))
-        {
-            AutoAssignRoles();
-            AnsiConsole.MarkupLine("\n[green]✓ Roles auto-assigned[/]");
-        }
-        else if (choice.StartsWith("Manually"))
-        {
-            ManuallyAssignRoles();
-        }
-        else
-        {
-            // Round-robin - all models for all roles
-            foreach (var role in Enum.GetValues<AgentRole>())
-            {
-                State.Collaboration.Agents[role] = State.SelectedModels
-                    .Select(m => new AgentConfig { Model = m })
-                    .ToList();
-            }
-            AnsiConsole.MarkupLine("\n[green]✓ All models assigned to all roles (round-robin)[/]");
-        }
-
         return Task.FromResult((WizardStep.WorkflowConfig, false));
-    }
-
-    private void AutoAssignRoles()
-    {
-        // Simple heuristic: assign based on model name patterns
-        var implementers = State.SelectedModels.Where(m =>
-            m.Model?.Contains("codex", StringComparison.OrdinalIgnoreCase) == true ||
-            m.Model?.Contains("coder", StringComparison.OrdinalIgnoreCase) == true).ToList();
-
-        var thinkers = State.SelectedModels.Where(m =>
-            m.Model?.Contains("opus", StringComparison.OrdinalIgnoreCase) == true ||
-            m.Model?.Contains("pro", StringComparison.OrdinalIgnoreCase) == true ||
-            m.Model?.Contains("70b", StringComparison.OrdinalIgnoreCase) == true ||
-            m.Model?.Contains("80b", StringComparison.OrdinalIgnoreCase) == true).ToList();
-
-        var fast = State.SelectedModels.Where(m =>
-            m.Model?.Contains("flash", StringComparison.OrdinalIgnoreCase) == true ||
-            m.Model?.Contains("mini", StringComparison.OrdinalIgnoreCase) == true ||
-            m.Model?.Contains("haiku", StringComparison.OrdinalIgnoreCase) == true ||
-            m.Model?.Contains("sonnet", StringComparison.OrdinalIgnoreCase) == true).ToList();
-
-        // Fallback to primary model for any empty categories
-        var fallback = State.PrimaryModel ?? State.SelectedModels.First();
-
-        if (implementers.Count == 0) implementers.Add(fallback);
-        if (thinkers.Count == 0) thinkers.Add(fallback);
-        if (fast.Count == 0) fast.Add(fallback);
-
-        State.Collaboration!.Agents[AgentRole.Implementer] = implementers.Select(m => new AgentConfig { Model = m }).ToList();
-        State.Collaboration.Agents[AgentRole.Planner] = thinkers.Select(m => new AgentConfig { Model = m }).ToList();
-        State.Collaboration.Agents[AgentRole.Challenger] = thinkers.Select(m => new AgentConfig { Model = m }).ToList();
-        State.Collaboration.Agents[AgentRole.Reviewer] = fast.Select(m => new AgentConfig { Model = m }).ToList();
-        State.Collaboration.Agents[AgentRole.Synthesizer] = thinkers.Take(1).Select(m => new AgentConfig { Model = m }).ToList();
-    }
-
-    private void ManuallyAssignRoles()
-    {
-        var roles = new[] { AgentRole.Planner, AgentRole.Challenger, AgentRole.Reviewer, AgentRole.Implementer };
-
-        foreach (var role in roles)
-        {
-            var modelChoices = State.SelectedModels.Select(m => $"{m.Provider}: {m.Model}").ToList();
-
-            var selected = AnsiConsole.Prompt(
-                new MultiSelectionPrompt<string>()
-                    .Title($"[yellow]Select models for [cyan]{role}[/] role:[/]")
-                    .PageSize(15)
-                    .Required()
-                    .AddChoices(modelChoices));
-
-            var roleModels = selected
-                .Select(name =>
-                {
-                    var parts = name.Split(": ", 2);
-                    if (parts.Length == 2 && Enum.TryParse<AIProvider>(parts[0], out var prov))
-                        return State.SelectedModels.FirstOrDefault(m => m.Provider == prov && m.Model == parts[1]);
-                    return null;
-                })
-                .Where(m => m != null)
-                .Cast<ModelSpec>()
-                .ToList();
-
-            State.Collaboration!.Agents[role] = roleModels.Select(m => new AgentConfig { Model = m }).ToList();
-        }
     }
 
     private Task<(WizardStep, bool)> WorkflowConfigStepAsync()
@@ -592,7 +478,7 @@ public class SetupWizard
                 .AddChoices(choices));
 
         if (choice == BackOption)
-            return Task.FromResult((WizardStep.RoleSetup, true));
+            return Task.FromResult((WizardStep.PrimaryModel, true));
 
         State.SelectedWorkflow = choice switch
         {

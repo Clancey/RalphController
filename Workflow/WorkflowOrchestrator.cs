@@ -50,6 +50,9 @@ public class WorkflowOrchestrator : IDisposable
         List<string>? contextFiles = null,
         CancellationToken ct = default)
     {
+        // Reset model rotation for fresh provider distribution
+        ResetRoleRotation();
+
         _currentWorkflow = new CollaborationWorkflow
         {
             Type = WorkflowType.Spec,
@@ -129,6 +132,9 @@ public class WorkflowOrchestrator : IDisposable
         string? commitRange = null,
         CancellationToken ct = default)
     {
+        // Reset model rotation for fresh provider distribution
+        ResetRoleRotation();
+
         _currentWorkflow = new CollaborationWorkflow
         {
             Type = WorkflowType.Review,
@@ -215,6 +221,371 @@ public class WorkflowOrchestrator : IDisposable
 
     #endregion
 
+    #region Task Workflow
+
+    /// <summary>
+    /// Result of a collaborative task workflow
+    /// </summary>
+    public class TaskWorkflowResult
+    {
+        public bool Success { get; set; }
+        public string? PlannerAnalysis { get; set; }
+        public string? ImplementerOutput { get; set; }
+        public string? ReviewerFeedback { get; set; }
+        public List<string> FilesModified { get; set; } = new();
+        public List<string> IssuesFound { get; set; } = new();
+        public bool NeedsMoreWork { get; set; }
+        public CollaborationWorkflow? Workflow { get; set; }
+    }
+
+    /// <summary>
+    /// Run a collaborative task workflow for each iteration
+    /// Planner → Implementer → Reviewer (→ loop if issues found)
+    /// </summary>
+    public async Task<TaskWorkflowResult> RunTaskWorkflowAsync(
+        string taskPrompt,
+        string workingDirectory,
+        int maxReviewCycles = 2,
+        CancellationToken ct = default)
+    {
+        // Reset model rotation for fresh provider distribution
+        ResetRoleRotation();
+
+        _currentWorkflow = new CollaborationWorkflow
+        {
+            Type = WorkflowType.Spec, // Reuse spec type for now
+            OriginalRequest = taskPrompt.Length > 200 ? taskPrompt[..200] + "..." : taskPrompt,
+            Status = WorkflowStatus.InProgress,
+            StartedAt = DateTime.UtcNow
+        };
+        OnWorkflowStarted?.Invoke(_currentWorkflow);
+
+        var result = new TaskWorkflowResult { Workflow = _currentWorkflow };
+
+        try
+        {
+            // Step 1: PLANNER analyzes the task
+            OnOutput?.Invoke("");
+            OnOutput?.Invoke("╔══════════════════════════════════════════════════════════════╗");
+            OnOutput?.Invoke("║         MULTI-AGENT COLLABORATION - Task Workflow            ║");
+            OnOutput?.Invoke("╚══════════════════════════════════════════════════════════════╝");
+            OnOutput?.Invoke("");
+            OnOutput?.Invoke("▶ Step 1: [Planner] Analyzing task and creating implementation plan...");
+
+            var plannerStep = await RunAgentStepAsync(
+                AgentRole.Planner,
+                BuildTaskPlannerPrompt(taskPrompt),
+                ct,
+                stepLabel: "Planner");
+
+            result.PlannerAnalysis = plannerStep.Response;
+            OnOutput?.Invoke($"  ✓ Planner complete ({plannerStep.ModelName})");
+
+            // Step 2: IMPLEMENTER executes the plan
+            OnOutput?.Invoke("");
+            OnOutput?.Invoke("▶ Step 2: [Implementer] Executing implementation plan...");
+
+            var implementerStep = await RunAgentStepAsync(
+                AgentRole.Implementer,
+                BuildImplementerPrompt(taskPrompt, plannerStep.Response!),
+                ct,
+                stepLabel: "Implementer");
+
+            result.ImplementerOutput = implementerStep.Response;
+            result.FilesModified = ExtractModifiedFiles(implementerStep.Response!);
+            OnOutput?.Invoke($"  ✓ Implementer complete ({implementerStep.ModelName})");
+
+            // Step 3: REVIEWER checks the implementation
+            for (int reviewCycle = 0; reviewCycle < maxReviewCycles; reviewCycle++)
+            {
+                OnOutput?.Invoke("");
+                OnOutput?.Invoke($"▶ Step 3{(reviewCycle > 0 ? $".{reviewCycle + 1}" : "")}: [Reviewer] Reviewing implementation...");
+
+                var reviewerStep = await RunAgentStepAsync(
+                    AgentRole.Reviewer,
+                    BuildTaskReviewerPrompt(taskPrompt, result.PlannerAnalysis!, result.ImplementerOutput!, result.FilesModified),
+                    ct,
+                    stepLabel: $"Reviewer{(reviewCycle > 0 ? $" (cycle {reviewCycle + 1})" : "")}");
+
+                result.ReviewerFeedback = reviewerStep.Response;
+                var issues = ExtractReviewIssues(reviewerStep.Response!);
+                result.IssuesFound = issues;
+                OnOutput?.Invoke($"  ✓ Reviewer complete ({reviewerStep.ModelName})");
+
+                // Check if reviewer approved
+                if (issues.Count == 0 || reviewerStep.Response!.Contains("APPROVED", StringComparison.OrdinalIgnoreCase))
+                {
+                    OnOutput?.Invoke("  ✓ Implementation APPROVED by reviewer");
+                    result.NeedsMoreWork = false;
+                    break;
+                }
+                else if (reviewCycle < maxReviewCycles - 1)
+                {
+                    // Run another implementation cycle to address issues
+                    OnOutput?.Invoke($"  ⚠ {issues.Count} issue(s) found - running fix cycle...");
+                    OnOutput?.Invoke("");
+                    OnOutput?.Invoke($"▶ Step 3.{reviewCycle + 1}b: [Implementer] Addressing review feedback...");
+
+                    var fixStep = await RunAgentStepAsync(
+                        AgentRole.Implementer,
+                        BuildFixPrompt(taskPrompt, result.ImplementerOutput!, reviewerStep.Response!),
+                        ct,
+                        stepLabel: "Implementer (fixes)");
+
+                    result.ImplementerOutput = fixStep.Response;
+                    result.FilesModified.AddRange(ExtractModifiedFiles(fixStep.Response!));
+                    OnOutput?.Invoke($"  ✓ Fixes applied ({fixStep.ModelName})");
+                }
+                else
+                {
+                    OnOutput?.Invoke($"  ⚠ {issues.Count} issue(s) remain after {maxReviewCycles} cycles");
+                    result.NeedsMoreWork = true;
+                }
+            }
+
+            // Optional: CHALLENGER finds edge cases (if enabled)
+            if (_collaborationConfig.Verification?.EnableChallenger == true && !result.NeedsMoreWork)
+            {
+                OnOutput?.Invoke("");
+                OnOutput?.Invoke("▶ Step 4: [Challenger] Finding edge cases and potential issues...");
+
+                var challengerStep = await RunAgentStepAsync(
+                    AgentRole.Challenger,
+                    BuildTaskChallengerPrompt(taskPrompt, result.ImplementerOutput!, result.ReviewerFeedback!),
+                    ct,
+                    stepLabel: "Challenger");
+
+                var challenges = ExtractChallengePoints(challengerStep.Response!);
+                if (challenges.Count > 0)
+                {
+                    OnOutput?.Invoke($"  ⚠ Challenger raised {challenges.Count} point(s)");
+                    result.IssuesFound.AddRange(challenges);
+                }
+                else
+                {
+                    OnOutput?.Invoke($"  ✓ No critical issues found ({challengerStep.ModelName})");
+                }
+            }
+
+            result.Success = !result.NeedsMoreWork;
+            _currentWorkflow.FinalOutput = result.ImplementerOutput;
+            _currentWorkflow.Status = result.Success ? WorkflowStatus.Completed : WorkflowStatus.InProgress;
+            _currentWorkflow.CompletedAt = DateTime.UtcNow;
+
+            OnOutput?.Invoke("");
+            OnOutput?.Invoke($"╔══════════════════════════════════════════════════════════════╗");
+            OnOutput?.Invoke($"║  Task Workflow Complete: {(result.Success ? "SUCCESS" : "NEEDS MORE WORK"),-30} ║");
+            OnOutput?.Invoke($"╚══════════════════════════════════════════════════════════════╝");
+            OnOutput?.Invoke("");
+
+            OnWorkflowCompleted?.Invoke(_currentWorkflow);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _currentWorkflow.Status = WorkflowStatus.Failed;
+            _currentWorkflow.Error = ex.Message;
+            _currentWorkflow.CompletedAt = DateTime.UtcNow;
+            OnError?.Invoke($"Task workflow failed: {ex.Message}");
+            result.Success = false;
+            return result;
+        }
+    }
+
+    private string BuildTaskPlannerPrompt(string taskPrompt)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## Task Analysis and Implementation Planning");
+        sb.AppendLine();
+        sb.AppendLine("You are the PLANNER agent. Analyze this task and create a detailed implementation plan.");
+        sb.AppendLine();
+        sb.AppendLine("### Task:");
+        sb.AppendLine(taskPrompt);
+        sb.AppendLine();
+        sb.AppendLine("### Your Analysis Should Include:");
+        sb.AppendLine("1. **Understanding**: What exactly needs to be done?");
+        sb.AppendLine("2. **Files Affected**: Which files will need changes?");
+        sb.AppendLine("3. **Implementation Steps**: Ordered list of specific changes");
+        sb.AppendLine("4. **Edge Cases**: What edge cases should be handled?");
+        sb.AppendLine("5. **Testing**: How should this be tested?");
+        sb.AppendLine("6. **Risks**: What could go wrong?");
+        sb.AppendLine();
+        sb.AppendLine("Be specific and actionable. The Implementer agent will use this plan.");
+
+        return sb.ToString();
+    }
+
+    private string BuildImplementerPrompt(string taskPrompt, string plannerAnalysis)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## Implementation Task");
+        sb.AppendLine();
+        sb.AppendLine("You are the IMPLEMENTER agent. Execute the following task based on the Planner's analysis.");
+        sb.AppendLine();
+        sb.AppendLine("### Original Task:");
+        sb.AppendLine(taskPrompt);
+        sb.AppendLine();
+        sb.AppendLine("### Planner's Analysis:");
+        sb.AppendLine(plannerAnalysis);
+        sb.AppendLine();
+        sb.AppendLine("### Your Task:");
+        sb.AppendLine("1. Implement the changes according to the plan");
+        sb.AppendLine("2. Handle edge cases identified by the Planner");
+        sb.AppendLine("3. Add appropriate error handling");
+        sb.AppendLine("4. Write or update tests if appropriate");
+        sb.AppendLine();
+        sb.AppendLine("Execute the implementation now.");
+
+        return sb.ToString();
+    }
+
+    private string BuildTaskReviewerPrompt(string taskPrompt, string plannerAnalysis, string implementerOutput, List<string> filesModified)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## Code Review");
+        sb.AppendLine();
+        sb.AppendLine("You are the REVIEWER agent. Review the implementation for correctness and quality.");
+        sb.AppendLine();
+        sb.AppendLine("### Original Task:");
+        sb.AppendLine(taskPrompt);
+        sb.AppendLine();
+        sb.AppendLine("### Planner's Plan:");
+        sb.AppendLine(plannerAnalysis.Length > 1000 ? plannerAnalysis[..1000] + "..." : plannerAnalysis);
+        sb.AppendLine();
+        sb.AppendLine("### Implementation Output:");
+        sb.AppendLine(implementerOutput.Length > 2000 ? implementerOutput[..2000] + "..." : implementerOutput);
+        sb.AppendLine();
+
+        if (filesModified.Count > 0)
+        {
+            sb.AppendLine("### Files Modified:");
+            foreach (var file in filesModified.Take(20))
+            {
+                sb.AppendLine($"  - {file}");
+            }
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("### Review Checklist:");
+        sb.AppendLine("1. Does the implementation match the task requirements?");
+        sb.AppendLine("2. Are edge cases handled properly?");
+        sb.AppendLine("3. Is error handling appropriate?");
+        sb.AppendLine("4. Are there any bugs or issues?");
+        sb.AppendLine("5. Is the code clean and maintainable?");
+        sb.AppendLine();
+        sb.AppendLine("### Response Format:");
+        sb.AppendLine("If approved: State 'APPROVED' and list what was done well.");
+        sb.AppendLine("If issues found: List each issue with severity (CRITICAL/HIGH/MEDIUM/LOW) and how to fix.");
+
+        return sb.ToString();
+    }
+
+    private string BuildFixPrompt(string taskPrompt, string previousOutput, string reviewerFeedback)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## Address Review Feedback");
+        sb.AppendLine();
+        sb.AppendLine("You are the IMPLEMENTER agent. The Reviewer found issues with your implementation.");
+        sb.AppendLine();
+        sb.AppendLine("### Original Task:");
+        sb.AppendLine(taskPrompt);
+        sb.AppendLine();
+        sb.AppendLine("### Reviewer Feedback:");
+        sb.AppendLine(reviewerFeedback);
+        sb.AppendLine();
+        sb.AppendLine("### Your Task:");
+        sb.AppendLine("Address ALL issues raised by the reviewer. Make the necessary fixes.");
+
+        return sb.ToString();
+    }
+
+    private string BuildTaskChallengerPrompt(string taskPrompt, string implementation, string reviewerFeedback)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## Challenge the Implementation");
+        sb.AppendLine();
+        sb.AppendLine("You are the CHALLENGER agent. Find edge cases and issues others may have missed.");
+        sb.AppendLine();
+        sb.AppendLine("### Task:");
+        sb.AppendLine(taskPrompt);
+        sb.AppendLine();
+        sb.AppendLine("### Implementation (summary):");
+        sb.AppendLine(implementation.Length > 1500 ? implementation[..1500] + "..." : implementation);
+        sb.AppendLine();
+        sb.AppendLine("### Questions to Consider:");
+        sb.AppendLine("1. What happens with unexpected input?");
+        sb.AppendLine("2. Are there race conditions or concurrency issues?");
+        sb.AppendLine("3. How does this handle failure scenarios?");
+        sb.AppendLine("4. Are there security implications?");
+        sb.AppendLine("5. What about performance at scale?");
+        sb.AppendLine();
+        sb.AppendLine("List specific concerns as bullet points. Say 'NO_ISSUES' if everything looks good.");
+
+        return sb.ToString();
+    }
+
+    private List<string> ExtractModifiedFiles(string output)
+    {
+        var files = new List<string>();
+        // Look for common patterns in output indicating file modifications
+        var patterns = new[]
+        {
+            @"(?:Created|Modified|Updated|Wrote|Saved)\s+[`']?([^`'\n]+\.\w+)[`']?",
+            @"(?:File|Writing to)\s+[`']?([^`'\n]+\.\w+)[`']?",
+            @"✓\s+([^`'\n]+\.\w+)"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var matches = Regex.Matches(output, pattern, RegexOptions.IgnoreCase | RegexOptions.Multiline);
+            foreach (Match match in matches)
+            {
+                if (match.Groups.Count > 1)
+                {
+                    var file = match.Groups[1].Value.Trim();
+                    if (!files.Contains(file))
+                        files.Add(file);
+                }
+            }
+        }
+
+        return files;
+    }
+
+    private List<string> ExtractReviewIssues(string reviewOutput)
+    {
+        var issues = new List<string>();
+
+        // Look for severity markers
+        var severityPattern = @"\[(CRITICAL|HIGH|MEDIUM)\].*?(?=\[(?:CRITICAL|HIGH|MEDIUM|LOW)|$)";
+        var matches = Regex.Matches(reviewOutput, severityPattern, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        foreach (Match match in matches)
+        {
+            issues.Add(match.Value.Trim());
+        }
+
+        // If no structured issues but also no APPROVED, consider it as having issues
+        if (issues.Count == 0 && !reviewOutput.Contains("APPROVED", StringComparison.OrdinalIgnoreCase))
+        {
+            // Look for bullet points or numbered items that might be issues
+            var bulletPattern = @"^[\s]*[-•*]\s+(.+)$";
+            var bulletMatches = Regex.Matches(reviewOutput, bulletPattern, RegexOptions.Multiline);
+            foreach (Match match in bulletMatches.Take(5))
+            {
+                var item = match.Groups[1].Value.Trim();
+                if (item.Length > 10 && !item.Contains("good", StringComparison.OrdinalIgnoreCase))
+                {
+                    issues.Add(item);
+                }
+            }
+        }
+
+        return issues;
+    }
+
+    #endregion
+
     #region Verification Workflow
 
     /// <summary>
@@ -226,6 +597,9 @@ public class WorkflowOrchestrator : IDisposable
         CancellationToken ct = default)
     {
         var verificationConfig = _collaborationConfig.Verification ?? new VerificationWorkflowConfig();
+
+        // Reset model rotation for fresh provider distribution
+        ResetRoleRotation();
 
         _currentWorkflow = new CollaborationWorkflow
         {
@@ -503,6 +877,9 @@ public class WorkflowOrchestrator : IDisposable
         List<string>? contextFiles = null,
         CancellationToken ct = default)
     {
+        // Reset model rotation for fresh provider distribution
+        ResetRoleRotation();
+
         _currentWorkflow = new CollaborationWorkflow
         {
             Type = WorkflowType.Consensus,
@@ -1118,26 +1495,193 @@ public class WorkflowOrchestrator : IDisposable
         _ => ""
     };
 
+    /// <summary>
+    /// Track role call counts for global round-robin rotation
+    /// </summary>
+    private readonly Dictionary<AgentRole, int> _roleCallCounts = new();
+
     private ModelSpec? GetModelForRole(AgentRole role, bool useExpert = false)
     {
-        var agentConfig = _collaborationConfig.GetAgentConfig(role);
-        return agentConfig.GetNextModel() ?? agentConfig.Model;
+        // Determine required tier for this role
+        var requiredTier = useExpert ? ModelTier.Expert : GetTierForRole(role);
+
+        // Get all available models for this role, filtered by tier
+        var allModels = GetAllModelsForRole(role);
+        var tieredModels = allModels.Where(m => m.EffectiveTier == requiredTier).ToList();
+
+        // Fall back to all models if no models match the tier
+        if (tieredModels.Count == 0)
+            tieredModels = allModels;
+
+        if (tieredModels.Count == 0)
+            return null;
+
+        // Get current rotation index for this tier+role combination
+        var tierKey = $"{role}_{requiredTier}";
+        if (!_tierCallCounts.TryGetValue(tierKey, out var callCount))
+            callCount = 0;
+
+        var modelIndex = callCount % tieredModels.Count;
+        _tierCallCounts[tierKey] = callCount + 1;
+
+        var selectedModel = tieredModels[modelIndex];
+        OnOutput?.Invoke($"  [Model] Selected {selectedModel.DisplayName} ({selectedModel.EffectiveTier} tier) for {role}");
+
+        return selectedModel;
     }
 
     /// <summary>
-    /// Get the Nth model for a role (for parallel execution with multiple agents)
+    /// Track tier+role call counts for rotation
+    /// </summary>
+    private readonly Dictionary<string, int> _tierCallCounts = new();
+
+    /// <summary>
+    /// Get the recommended tier for each agent role
+    /// </summary>
+    private static ModelTier GetTierForRole(AgentRole role) => role switch
+    {
+        // Expert tier: Roles that need deep understanding and complex reasoning
+        AgentRole.Planner => ModelTier.Expert,
+        AgentRole.Synthesizer => ModelTier.Expert,
+
+        // Capable tier: Implementation and thorough review
+        AgentRole.Implementer => ModelTier.Capable,
+        AgentRole.Reviewer => ModelTier.Capable,
+        AgentRole.Advocate => ModelTier.Capable,
+
+        // Fast tier: Quick checks and challenges (volume over depth)
+        AgentRole.Challenger => ModelTier.Fast,
+
+        _ => ModelTier.Capable
+    };
+
+    /// <summary>
+    /// Random generator for shuffling model order within providers
+    /// </summary>
+    private static readonly Random _random = new();
+
+    /// <summary>
+    /// Cache of interleaved models per role (regenerated per workflow run)
+    /// </summary>
+    private readonly Dictionary<AgentRole, List<ModelSpec>> _interleavedModelsCache = new();
+
+    /// <summary>
+    /// Get ALL available models for a role (from all configs and pools)
+    /// Models are interleaved by PROVIDER first to distribute API usage:
+    /// [Claude1, Gemini1, Codex1, Claude2, Gemini2, Codex2, ...]
+    /// This prevents using up one provider's API limits before touching others
+    /// </summary>
+    private List<ModelSpec> GetAllModelsForRole(AgentRole role)
+    {
+        // Check cache first (built once per workflow run)
+        if (_interleavedModelsCache.TryGetValue(role, out var cached))
+            return cached;
+
+        var models = new List<ModelSpec>();
+        var configs = _collaborationConfig.GetAgentConfigs(role);
+
+        foreach (var config in configs)
+        {
+            // Add specific model if set
+            if (config.Model != null)
+                models.Add(config.Model);
+
+            // Add all models from the pool
+            if (config.ModelPool?.Count > 0)
+                models.AddRange(config.ModelPool);
+        }
+
+        // Deduplicate
+        var uniqueModels = models.DistinctBy(m => m.DisplayName).ToList();
+
+        // Group by provider, shuffle within each provider, then interleave
+        var interleavedModels = InterleaveByProvider(uniqueModels);
+
+        // Cache the interleaved list for this workflow run
+        _interleavedModelsCache[role] = interleavedModels;
+
+        return interleavedModels;
+    }
+
+    /// <summary>
+    /// Interleave models by provider to spread API usage
+    /// Returns: [Provider1-Model1, Provider2-Model1, Provider3-Model1, Provider1-Model2, ...]
+    /// </summary>
+    private static List<ModelSpec> InterleaveByProvider(List<ModelSpec> models)
+    {
+        if (models.Count <= 1)
+            return models;
+
+        // Group by provider
+        var byProvider = models
+            .GroupBy(m => m.Provider)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        // Shuffle models within each provider for variety
+        foreach (var providerModels in byProvider.Values)
+        {
+            ShuffleList(providerModels);
+        }
+
+        // Shuffle provider order too
+        var providers = byProvider.Keys.ToList();
+        ShuffleList(providers);
+
+        // Interleave: take one from each provider in round-robin fashion
+        var result = new List<ModelSpec>();
+        var indices = providers.ToDictionary(p => p, _ => 0);
+        var totalModels = models.Count;
+
+        while (result.Count < totalModels)
+        {
+            foreach (var provider in providers)
+            {
+                var providerModels = byProvider[provider];
+                if (indices[provider] < providerModels.Count)
+                {
+                    result.Add(providerModels[indices[provider]]);
+                    indices[provider]++;
+
+                    if (result.Count >= totalModels)
+                        break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Fisher-Yates shuffle for random order
+    /// </summary>
+    private static void ShuffleList<T>(List<T> list)
+    {
+        for (int i = list.Count - 1; i > 0; i--)
+        {
+            int j = _random.Next(i + 1);
+            (list[i], list[j]) = (list[j], list[i]);
+        }
+    }
+
+    /// <summary>
+    /// Get the Nth model for a role (for explicit parallel execution)
     /// </summary>
     private ModelSpec? GetModelForRoleAt(AgentRole role, int index)
     {
-        var configs = _collaborationConfig.GetAgentConfigs(role);
-        if (index < configs.Count)
-        {
-            var config = configs[index];
-            return config.Model ?? config.GetNextModel();
-        }
-        // Fall back to round-robin from first config's pool
-        var firstConfig = configs.FirstOrDefault();
-        return firstConfig?.GetNextModel() ?? firstConfig?.Model;
+        var allModels = GetAllModelsForRole(role);
+        if (allModels.Count == 0)
+            return null;
+
+        // Wrap index if needed
+        return allModels[index % allModels.Count];
+    }
+
+    /// <summary>
+    /// Get the number of distinct models available for a role
+    /// </summary>
+    private int GetModelCountForRole(AgentRole role)
+    {
+        return GetAllModelsForRole(role).Count;
     }
 
     /// <summary>
@@ -1146,6 +1690,17 @@ public class WorkflowOrchestrator : IDisposable
     private int GetAgentCountForRole(AgentRole role)
     {
         return _collaborationConfig.GetAgentCount(role);
+    }
+
+    /// <summary>
+    /// Reset role rotation counters and caches (call at start of new workflow)
+    /// This ensures a fresh shuffle of providers/models for each workflow run
+    /// </summary>
+    private void ResetRoleRotation()
+    {
+        _roleCallCounts.Clear();
+        _tierCallCounts.Clear();
+        _interleavedModelsCache.Clear();
     }
 
     private AgentRole GetRoleForStance(ConsensusStance stance) => stance switch

@@ -34,6 +34,28 @@ public class CollaborationConfig
     public VerificationWorkflowConfig? Verification { get; set; }
 
     /// <summary>
+    /// Custom model tier overrides (pattern → tier mapping)
+    /// Example: { "my-custom-model": "Expert", "cheap-model": "Fast" }
+    /// Patterns are matched as substrings (case-insensitive)
+    /// </summary>
+    public Dictionary<string, ModelTier> TierOverrides { get; set; } = new();
+
+    /// <summary>
+    /// Apply tier overrides from config to static ModelSpec.TierOverrides
+    /// Call this after loading configuration
+    /// </summary>
+    public void ApplyTierOverrides()
+    {
+        if (TierOverrides.Count > 0)
+        {
+            foreach (var (pattern, tier) in TierOverrides)
+            {
+                ModelSpec.TierOverrides[pattern] = tier;
+            }
+        }
+    }
+
+    /// <summary>
     /// Get all agent configs for a role, or create default
     /// </summary>
     public List<AgentConfig> GetAgentConfigs(AgentRole role)

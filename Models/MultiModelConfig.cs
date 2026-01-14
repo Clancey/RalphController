@@ -3,6 +3,21 @@ using System.Text.Json.Serialization;
 namespace RalphController.Models;
 
 /// <summary>
+/// Model capability tiers - ranked by capability and cost
+/// </summary>
+public enum ModelTier
+{
+    /// <summary>Most capable models - for complex planning, synthesis, architecture</summary>
+    Expert = 1,
+
+    /// <summary>Balanced capability - for implementation, reviewing, general tasks</summary>
+    Capable = 2,
+
+    /// <summary>Fast and economical - for simple checks, validation, quick tasks</summary>
+    Fast = 3
+}
+
+/// <summary>
 /// Configuration for multi-model support (rotation and verification)
 /// </summary>
 public class MultiModelConfig
@@ -50,9 +65,72 @@ public class ModelSpec
     /// <summary>Custom executable path (overrides provider default)</summary>
     public string? ExecutablePath { get; set; }
 
+    /// <summary>Explicit capability tier (null = auto-infer from model name)</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public ModelTier? Tier { get; set; }
+
     /// <summary>Gets display name (label or model)</summary>
     [JsonIgnore]
     public string DisplayName => Label ?? Model;
+
+    /// <summary>Gets the effective tier (explicit or inferred from model name)</summary>
+    [JsonIgnore]
+    public ModelTier EffectiveTier => Tier ?? InferTierFromModelName();
+
+    /// <summary>
+    /// User-configurable tier overrides (loaded from ralph.json)
+    /// Maps model name patterns to tiers
+    /// </summary>
+    public static Dictionary<string, ModelTier> TierOverrides { get; set; } = new();
+
+    /// <summary>
+    /// Infers capability tier from model name patterns
+    /// Checks user overrides first, then falls back to built-in rules
+    /// </summary>
+    private ModelTier InferTierFromModelName()
+    {
+        var name = Model?.ToLowerInvariant() ?? "";
+
+        // Check user overrides first (patterns can be partial matches)
+        foreach (var (pattern, tier) in TierOverrides)
+        {
+            if (name.Contains(pattern.ToLowerInvariant()))
+                return tier;
+        }
+
+        // Expert tier: Most capable models (expensive, high-quality)
+        if (name.Contains("opus") ||
+            name.Contains("pro") ||
+            name.Contains("70b") ||
+            name.Contains("32b") ||
+            name.Contains("405b") ||
+            name.Contains("glm-4") ||  // GLM-4.x series
+            name.Contains("gpt-5") && !name.Contains("mini") && !name.Contains("nano") ||
+            name.Contains("o1") && !name.Contains("mini") ||
+            name.Contains("o3") ||
+            name.Contains("deep-seek-r1") ||
+            name.Contains("deepseek-r1") ||
+            name.Contains("codex-max") ||
+            name.Contains("qwen-max") ||
+            name.Contains("claude-sonnet-4"))  // Sonnet 4.x is expert-level
+            return ModelTier.Expert;
+
+        // Fast tier: Quick and economical models
+        if (name.Contains("haiku") ||
+            name.Contains("flash") ||
+            name.Contains("mini") ||
+            name.Contains("nano") ||
+            name.Contains("8b") ||
+            name.Contains("7b") ||
+            name.Contains("3b") ||
+            name.Contains("1b") ||
+            name.Contains("fast") ||
+            name.Contains("turbo"))
+            return ModelTier.Fast;
+
+        // Default to Capable tier (balanced performance/cost)
+        return ModelTier.Capable;
+    }
 
     /// <summary>
     /// Creates an AIProviderConfig from this spec

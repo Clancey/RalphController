@@ -103,6 +103,21 @@ public class LoopController : IDisposable
         // Initialize workflow orchestrator if collaboration is enabled
         if (config.Collaboration?.Enabled == true)
         {
+            // Ensure prompts directory exists with default agent prompts
+            var promptsDir = Path.Combine(config.TargetDirectory, config.Collaboration.PromptsDirectory);
+            if (!Directory.Exists(promptsDir))
+            {
+                Directory.CreateDirectory(promptsDir);
+                CreateDefaultAgentPrompts(promptsDir);
+            }
+            else if (!Directory.EnumerateFiles(promptsDir, "*.md").Any())
+            {
+                CreateDefaultAgentPrompts(promptsDir);
+            }
+
+            // Apply any user-defined tier overrides from config
+            config.Collaboration.ApplyTierOverrides();
+
             _workflowOrchestrator = new WorkflowOrchestrator(config, config.Collaboration);
             _workflowOrchestrator.OnOutput += msg => OnOutput?.Invoke(msg);
             _workflowOrchestrator.OnError += msg => OnError?.Invoke(msg);
@@ -503,6 +518,75 @@ public class LoopController : IDisposable
             prompt = await GetPromptAsync();
         }
 
+        // Check if we should use collaborative task workflow
+        // (not during final verification or workflow verification - those have their own flows)
+        if (_config.Collaboration?.Enabled == true &&
+            _workflowOrchestrator != null &&
+            !_pendingFinalVerification &&
+            !_inFinalVerification &&
+            !_pendingWorkflowVerification)
+        {
+            // Run collaborative task workflow: Planner → Implementer → Reviewer
+            var taskResult = await _workflowOrchestrator.RunTaskWorkflowAsync(
+                prompt,
+                _config.TargetDirectory,
+                maxReviewCycles: 2,
+                ct: cancellationToken);
+
+            // Process the result
+            _statistics.CompleteIteration(taskResult.Success);
+
+            if (taskResult.Success)
+            {
+                // Check for completion signals in the output
+                if (taskResult.ImplementerOutput != null)
+                {
+                    var taskAIResult = new AIResult
+                    {
+                        Success = taskResult.Success,
+                        ExitCode = 0,
+                        Output = taskResult.ImplementerOutput,
+                        Error = ""
+                    };
+                    var analysis = _responseAnalyzer.Analyze(taskAIResult);
+                    if (analysis.ShouldExit && _config.AutoExitOnCompletion)
+                    {
+                        OnOutput?.Invoke($"[Analysis] Completion signal detected: {analysis.ExitReason}");
+
+                        // Use workflow verification for final check
+                        if (_config.Collaboration?.Verification?.Enabled == true)
+                        {
+                            _pendingWorkflowVerification = true;
+                            _workflowVerificationContext = $"Task completed: {analysis.ExitReason}";
+                            OnOutput?.Invoke(">>> Scheduling multi-agent verification workflow...");
+                        }
+                        else if (_config.EnableFinalVerification)
+                        {
+                            _pendingFinalVerification = true;
+                            OnOutput?.Invoke(">>> Scheduling final verification...");
+                        }
+                        else
+                        {
+                            Stop();
+                        }
+                    }
+                }
+
+                // Feed task issues to circuit breaker
+                if (taskResult.IssuesFound.Count == 0)
+                {
+                    _circuitBreaker.RecordSuccess();
+                }
+            }
+            else
+            {
+                // Task had issues - might need to continue
+                OnOutput?.Invoke($"[Task] Workflow completed with {taskResult.IssuesFound.Count} remaining issue(s)");
+            }
+
+            return;
+        }
+
         // Get current provider from ModelSelector (handles multi-model)
         // Note: currentModel already retrieved above for the iteration header
         var currentProvider = _modelSelector.GetCurrentProvider();
@@ -515,7 +599,7 @@ public class LoopController : IDisposable
         }
         // Note: Model name is now shown in the iteration header, so no need to output here
 
-        // Create and run process - use OllamaClient for Ollama provider
+        // Create and run process - use OllamaClient for Ollama provider (single-agent mode)
         // Wrap in try-catch to handle agent failures gracefully
         // Apply inactivity timeout if configured (timeout resets on any output)
         AIResult result;
@@ -1114,6 +1198,201 @@ public class LoopController : IDisposable
         _providerRateLimitUntil = null;
         _providerRateLimitMessage = null;
         return true;
+    }
+
+    private void CreateDefaultAgentPrompts(string promptsDir)
+    {
+        OnOutput?.Invoke($"[Collaboration] Creating default agent prompts in: {promptsDir}");
+
+        // Planner prompt - analyzes tasks and creates implementation plans
+        var plannerPrompt = @"# Planner Agent
+
+You are the Planner agent in a collaborative development workflow. Your role is to analyze tasks and create detailed implementation plans.
+
+## Responsibilities
+1. **Analyze the Task**: Understand what needs to be done, identify requirements and constraints
+2. **Identify Files**: Determine which files need to be created, modified, or reviewed
+3. **Create a Plan**: Break down the task into clear, actionable steps
+4. **Consider Edge Cases**: Think about potential issues, error handling, and testing needs
+5. **Define Success Criteria**: Specify how we'll know the task is complete
+
+## Output Format
+Provide your analysis in a structured format:
+
+### Task Analysis
+[Summary of what needs to be done]
+
+### Files to Modify/Create
+- [List of files with brief description of changes]
+
+### Implementation Steps
+1. [Step 1]
+2. [Step 2]
+...
+
+### Considerations
+- [Edge cases, potential issues, testing needs]
+
+### Success Criteria
+- [How we verify the task is complete]
+";
+
+        // Implementer prompt - executes the plan
+        var implementerPrompt = @"# Implementer Agent
+
+You are the Implementer agent in a collaborative development workflow. Your role is to execute implementation plans created by the Planner.
+
+## Responsibilities
+1. **Follow the Plan**: Execute each step from the Planner's implementation plan
+2. **Write Quality Code**: Produce clean, well-structured, maintainable code
+3. **Handle Edge Cases**: Implement proper error handling and validation
+4. **Document Changes**: Add appropriate comments and documentation
+5. **Report Progress**: Clearly communicate what was done
+
+## Guidelines
+- Follow existing code patterns and conventions in the codebase
+- Make minimal, focused changes that address the task
+- Include error handling for common failure cases
+- Write self-documenting code with clear variable/function names
+- Test your changes mentally before considering them complete
+
+## Output Format
+After implementation, summarize:
+
+### Changes Made
+- [File]: [Description of changes]
+
+### Implementation Notes
+[Any important details about the implementation]
+
+### Remaining Work
+[If any steps couldn't be completed, explain why]
+";
+
+        // Reviewer prompt - reviews implementation for quality and correctness
+        var reviewerPrompt = @"# Reviewer Agent
+
+You are the Reviewer agent in a collaborative development workflow. Your role is to review implementations for quality, correctness, and completeness.
+
+## Responsibilities
+1. **Verify Correctness**: Check that the implementation matches requirements
+2. **Review Code Quality**: Look for maintainability, readability, and best practices
+3. **Find Issues**: Identify bugs, edge cases, and potential problems
+4. **Suggest Improvements**: Provide constructive feedback when needed
+5. **Approve or Request Changes**: Make a clear decision
+
+## Review Checklist
+- [ ] Does the code do what was requested?
+- [ ] Are there any logic errors or bugs?
+- [ ] Is error handling adequate?
+- [ ] Does it follow the codebase's patterns and conventions?
+- [ ] Are there any security concerns?
+- [ ] Is the code maintainable and readable?
+- [ ] Are edge cases handled?
+
+## Output Format
+
+### Review Summary
+[Overall assessment]
+
+### Issues Found
+[List any issues, categorized by severity: Critical, High, Medium, Low]
+
+### Suggestions
+[Optional improvements that aren't blocking]
+
+### Decision
+**APPROVED** - Implementation is ready
+OR
+**CHANGES REQUESTED** - [List specific changes needed]
+";
+
+        // Challenger prompt - finds edge cases and potential issues
+        var challengerPrompt = @"# Challenger Agent
+
+You are the Challenger agent in a collaborative development workflow. Your role is to critically examine implementations and find potential issues that others might miss.
+
+## Responsibilities
+1. **Find Edge Cases**: Identify scenarios that might not be handled correctly
+2. **Challenge Assumptions**: Question assumptions made in the implementation
+3. **Security Review**: Look for potential security vulnerabilities
+4. **Stress Testing**: Consider what happens under unusual conditions
+5. **Devil's Advocate**: Raise valid concerns even if the implementation looks good
+
+## Areas to Examine
+- Input validation and sanitization
+- Error handling and recovery
+- Concurrency and race conditions
+- Resource management (memory, file handles, connections)
+- Performance under load
+- Backwards compatibility
+- Security vulnerabilities
+
+## Output Format
+
+### Edge Cases Identified
+1. [Scenario]: [What could go wrong]
+
+### Assumption Challenges
+- [Assumption]: [Why it might not hold]
+
+### Potential Vulnerabilities
+- [Issue]: [Risk and recommendation]
+
+### Verdict
+**SATISFACTORY** - No critical issues found
+OR
+**CONCERNS** - [List concerns that should be addressed]
+";
+
+        // Synthesizer prompt - combines feedback and creates final recommendations
+        var synthesizerPrompt = @"# Synthesizer Agent
+
+You are the Synthesizer agent in a collaborative development workflow. Your role is to combine feedback from multiple reviewers and create a coherent final recommendation.
+
+## Responsibilities
+1. **Aggregate Feedback**: Collect and organize feedback from all reviewers
+2. **Resolve Conflicts**: When reviewers disagree, analyze and make recommendations
+3. **Prioritize Issues**: Rank issues by importance and impact
+4. **Create Action Items**: Define clear next steps
+5. **Final Verdict**: Provide a clear approve/revise decision
+
+## Output Format
+
+### Feedback Summary
+[Consolidated summary of all reviewer feedback]
+
+### Key Issues
+| Priority | Issue | Source | Recommendation |
+|----------|-------|--------|----------------|
+| [High/Med/Low] | [Issue] | [Reviewer] | [Action] |
+
+### Conflicts & Resolution
+[If reviewers disagreed, explain the resolution]
+
+### Action Items
+1. [Required changes]
+2. [Optional improvements]
+
+### Final Verdict
+**APPROVED** - Ready to proceed
+OR
+**REVISIONS NEEDED** - [Summary of required changes]
+";
+
+        try
+        {
+            File.WriteAllText(Path.Combine(promptsDir, "planner.md"), plannerPrompt);
+            File.WriteAllText(Path.Combine(promptsDir, "implementer.md"), implementerPrompt);
+            File.WriteAllText(Path.Combine(promptsDir, "reviewer.md"), reviewerPrompt);
+            File.WriteAllText(Path.Combine(promptsDir, "challenger.md"), challengerPrompt);
+            File.WriteAllText(Path.Combine(promptsDir, "synthesizer.md"), synthesizerPrompt);
+            OnOutput?.Invoke($"[Collaboration] Created 5 default agent prompts");
+        }
+        catch (Exception ex)
+        {
+            OnError?.Invoke($"[Collaboration] Failed to create agent prompts: {ex.Message}");
+        }
     }
 
     public void Dispose()

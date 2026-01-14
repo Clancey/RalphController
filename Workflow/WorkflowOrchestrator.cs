@@ -1638,7 +1638,7 @@ public class WorkflowOrchestrator : IDisposable
         _tierCallCounts[tierKey] = callCount + 1;
 
         var selectedModel = tieredModels[modelIndex];
-        OnOutput?.Invoke($"  [Model] Selected {selectedModel.DisplayName} ({selectedModel.EffectiveTier} tier) for {role}");
+        OnOutput?.Invoke($"  [Model] Selected {selectedModel.Provider}:{selectedModel.DisplayName} ({selectedModel.EffectiveTier} tier) for {role}");
 
         return selectedModel;
     }
@@ -1679,7 +1679,12 @@ public class WorkflowOrchestrator : IDisposable
     private readonly Dictionary<AgentRole, List<ModelSpec>> _interleavedModelsCache = new();
 
     /// <summary>
-    /// Get ALL available models for a role (from all configs and pools)
+    /// Get ALL available models for a role
+    ///
+    /// Priority:
+    /// 1. Role-specific models from CollaborationConfig (if configured)
+    /// 2. ALL available models from MultiModelConfig (global pool)
+    ///
     /// Models are interleaved by PROVIDER first to distribute API usage:
     /// [Claude1, Gemini1, Codex1, Claude2, Gemini2, Codex2, ...]
     /// This prevents using up one provider's API limits before touching others
@@ -1691,8 +1696,9 @@ public class WorkflowOrchestrator : IDisposable
             return cached;
 
         var models = new List<ModelSpec>();
-        var configs = _collaborationConfig.GetAgentConfigs(role);
 
+        // First, try role-specific models from collaboration config
+        var configs = _collaborationConfig.GetAgentConfigs(role);
         foreach (var config in configs)
         {
             // Add specific model if set
@@ -1702,6 +1708,14 @@ public class WorkflowOrchestrator : IDisposable
             // Add all models from the pool
             if (config.ModelPool?.Count > 0)
                 models.AddRange(config.ModelPool);
+        }
+
+        // If no role-specific models, use ALL available models from MultiModelConfig
+        // This allows runtime tier-based selection from the global pool
+        if (models.Count == 0 && _config.MultiModel?.Models.Count > 0)
+        {
+            models.AddRange(_config.MultiModel.Models);
+            OnOutput?.Invoke($"  [Model] Using global model pool ({models.Count} models) for {role}");
         }
 
         // Deduplicate

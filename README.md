@@ -16,24 +16,37 @@ RalphController automates the Ralph Wiggum technique:
 
 ## Features
 
+### Core Features
 - **Rich TUI**: Spectre.Console-based interface with real-time streaming output, status, and controls
 - **Live Streaming**: See AI output as it's generated, not just after completion
 - **Project Scaffolding**: Generate all project files from a description or spec file
 - **Re-initialization**: Use `--init` to regenerate project files with new requirements
-- **Multi-Provider**: Supports Claude, Codex, GitHub Copilot, Gemini, Cursor, OpenCode, and Ollama/LMStudio
-- **Provider Detection**: Automatically detects which AI CLIs are installed and only offers those
-- **Multi-Model**: Rotate between multiple models or use verification model for completion checking
-- **Final Verification**: Before completing, verifies all tasks are truly done
+
+### Multi-Agent Collaboration
+- **Task Workflow**: Planner → Implementer → Reviewer pipeline for each iteration
+- **Model Tiers**: Automatic Expert/Capable/Fast tier selection based on role requirements
+- **Provider Interleaving**: Rotates through providers to spread API usage
+- **Git Integration**: Automatically commits approved changes with descriptive messages
+
+### Multi-Provider Support
+- **Providers**: Claude, Codex, GitHub Copilot, Gemini, Cursor, OpenCode, and Ollama/LMStudio
+- **Provider Detection**: Automatically detects which AI CLIs are installed
+- **Multi-Model**: Rotate between multiple models or use verification model
 - **Provider Persistence**: Remembers your provider choice per project in `.ralph.json`
-- **Global Tool**: Install as `ralph` command, run from any directory
+
+### Safety & Control
+- **Final Verification**: Before completing, verifies all tasks are truly done
 - **Pause/Resume/Stop**: Full control over the loop execution
 - **Hot-Reload**: Automatically detects changes to `prompt.md`
 - **Manual Injection**: Inject custom prompts mid-loop
 - **Circuit Breaker**: Detects stagnation (3+ loops without progress) and stops
 - **Response Analyzer**: Detects completion signals and auto-exits when done
 - **Rate Limiting**: Configurable API calls/hour (default: 100)
+
+### Progress Tracking
 - **RALPH_STATUS**: Structured status reporting for progress tracking
 - **Priority Levels**: High/Medium/Low task prioritization
+- **Global Tool**: Install as `ralph` command, run from any directory
 
 ## Quick Start
 
@@ -574,6 +587,318 @@ You can also configure multi-model directly in your `.ralph.json`:
 4. If verifier makes **any changes** → not truly done, continue with primary
 
 This elegant approach requires no special verification prompts - just run another model and see if it agrees nothing needs to change.
+
+## Multi-Agent Collaboration Workflows
+
+RalphController supports sophisticated multi-agent collaboration workflows that go beyond simple model rotation. These workflows enable structured collaboration between multiple AI agents with specialized roles.
+
+### Task Workflow (Primary Mode)
+
+When collaboration is enabled, each iteration runs the **full task workflow**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    TASK WORKFLOW                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────┐     ┌──────────────┐     ┌──────────┐            │
+│  │ PLANNER  │ ──▶ │ IMPLEMENTER  │ ──▶ │ REVIEWER │            │
+│  │ (Expert) │     │  (Capable)   │     │(Capable) │            │
+│  └──────────┘     └──────────────┘     └──────────┘            │
+│       │                  │                   │                  │
+│       │                  │                   ▼                  │
+│       │                  │            ┌────────────┐            │
+│       │                  │            │  Approved? │            │
+│       │                  │            └────────────┘            │
+│       │                  │              │       │               │
+│       │                  │            Yes       No              │
+│       │                  │              │       │               │
+│       │                  │              ▼       ▼               │
+│       │                  │         ┌────────┐  Loop             │
+│       │                  │         │  GIT   │  Back             │
+│       │                  │         │ COMMIT │                   │
+│       │                  │         └────────┘                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+1. **Planner** (Expert tier) - Analyzes the task and creates an implementation plan
+2. **Implementer** (Capable tier) - Actually modifies files according to the plan
+3. **Reviewer** (Capable tier) - Reviews the changes for correctness
+4. **Git Commit** - If approved, commits all changes with descriptive message
+
+Each agent is a **real AI process** that can read and modify files using CLI tools (claude, copilot, codex, etc.).
+
+### Agent Roles
+
+| Role | Tier | Purpose |
+|------|------|---------|
+| **Planner** | Expert | Breaks down features into implementation steps |
+| **Synthesizer** | Expert | Combines multiple perspectives into recommendations |
+| **Implementer** | Capable | Primary coding agent that writes features |
+| **Reviewer** | Capable | Code review with severity-based findings |
+| **Advocate** | Capable | Highlights strengths and opportunities |
+| **Challenger** | Fast | Questions assumptions, finds edge cases and issues |
+
+### Model Tier System
+
+Models are automatically classified into tiers based on their capabilities:
+
+| Tier | Models | Used For |
+|------|--------|----------|
+| **Expert** | opus, pro, 70b+, gpt-5, glm-4 | Planning, synthesis, complex reasoning |
+| **Capable** | sonnet, 13b-30b, gpt-4, gemini-pro | Implementation, thorough review |
+| **Fast** | haiku, flash, mini, 7b-8b | Quick checks, challenges, validation |
+
+**Runtime Selection**: Models are selected at runtime from ALL available models, filtered by the required tier for each role. No pre-assignment needed.
+
+**Provider Interleaving**: Models are rotated through different providers first to spread API usage:
+```
+[Claude-Opus, Gemini-Pro, Ollama-70b, Claude-Sonnet, Gemini-Flash, ...]
+```
+
+### Custom Tier Overrides
+
+Add custom tier mappings in `.ralph.json`:
+
+```json
+{
+  "collaboration": {
+    "tierOverrides": {
+      "my-custom-model": "Expert",
+      "cheap-model": "Fast",
+      "glm-4.7": "Expert"
+    }
+  }
+}
+```
+
+### Additional Workflow Types
+
+Beyond the primary Task Workflow, Ralph supports specialized workflows:
+
+#### 1. Spec Workflow (Feature Specification)
+
+Multi-agent workflow for creating robust feature specifications:
+
+1. **Planner** creates initial spec from feature request
+2. **Challenger** critiques the spec, finds issues
+3. **Synthesizer** combines feedback into final spec
+
+```bash
+# Start spec workflow from TUI (press W for workflow menu)
+```
+
+#### 2. Review Workflow (Code Review)
+
+Parallel multi-reviewer code review with severity tracking:
+
+1. **Multiple Reviewers** analyze code in parallel (configurable count)
+2. **Findings** consolidated and deduplicated
+3. **Expert Validation** for critical issues (optional)
+
+Severity levels:
+- **CRITICAL**: Must fix before merge (security, data loss)
+- **HIGH**: Should fix (bugs, significant issues)
+- **MEDIUM**: Consider fixing (code quality)
+- **LOW**: Nice to have (style improvements)
+- **INFO**: Observations only
+
+#### 3. Verification Workflow (Replaces Single-Model Verification)
+
+Multi-agent verification when completion is detected:
+
+1. **Multiple Verifiers** run in parallel to check work
+2. **Challenger** looks for missed edge cases
+3. **Consensus** determines if work is truly complete
+4. If passed, **Final Verification** checks all tasks in implementation_plan.md
+
+This replaces the old single-model verification with a more thorough multi-agent review.
+
+#### 4. Consensus Workflow
+
+Blinded multi-model analysis to prevent groupthink:
+
+1. **Multiple Models** with different stances (For, Against, Neutral)
+2. Each model only sees the original proposal (blinded)
+3. **Synthesizer** combines opinions into recommendations
+
+### Configuration
+
+Enable collaboration in `.ralph.json`:
+
+**Minimal Configuration** (recommended - uses runtime tier selection):
+
+```json
+{
+  "collaboration": {
+    "enabled": true
+  },
+  "multiModel": {
+    "strategy": "RoundRobin",
+    "models": [
+      { "provider": "Claude", "model": "opus" },
+      { "provider": "Claude", "model": "sonnet" },
+      { "provider": "Gemini", "model": "gemini-2.5-pro" },
+      { "provider": "Ollama", "model": "qwen3-coder:30b", "baseUrl": "http://localhost:11434" }
+    ]
+  }
+}
+```
+
+With this config, Ralph automatically:
+- Selects **Expert tier** models (opus, gemini-pro) for Planner/Synthesizer
+- Selects **Capable tier** models (sonnet, qwen3) for Implementer/Reviewer
+- Selects **Fast tier** models for Challenger
+- Rotates through providers to spread API usage
+
+**Full Configuration** (for advanced customization):
+
+```json
+{
+  "collaboration": {
+    "enabled": true,
+    "promptsDirectory": "prompts",
+    "tierOverrides": {
+      "my-custom-model": "Expert"
+    },
+    "verification": {
+      "enabled": true,
+      "reviewerCount": 2,
+      "enableChallenger": true,
+      "requireUnanimous": false,
+      "parallelExecution": true
+    },
+    "review": {
+      "reviewerCount": 2,
+      "expertValidation": true,
+      "minSeverity": "Low",
+      "focusAreas": ["Full", "Security"]
+    },
+    "spec": {
+      "enableChallenger": true,
+      "maxRefinements": 2
+    },
+    "agents": {
+      "Planner": {
+        "model": { "provider": "Claude", "model": "opus" }
+      },
+      "Reviewer": {
+        "modelPool": [
+          { "provider": "Claude", "model": "sonnet" },
+          { "provider": "Gemini", "model": "gemini-2.5-pro" }
+        ]
+      }
+    }
+  }
+}
+```
+
+### Model Selection Priority
+
+The system uses the following priority for selecting models:
+
+1. **Role-specific model** - If configured in `agents.[Role].model`
+2. **Role-specific pool** - Round-robin through `agents.[Role].modelPool`
+3. **Global pool by tier** - All models from `multiModel.models`, filtered by required tier
+4. **Default provider** - Falls back to the configured provider
+
+**Note**: You don't need to pre-assign models to roles. Just configure your available models in `multiModel.models` and Ralph will automatically select appropriate models based on tier requirements.
+
+### Parallel Execution
+
+Workflows execute steps in parallel where possible:
+
+- **Multiple Reviewers**: All run simultaneously
+- **Consensus Opinions**: All participants analyze in parallel
+- **Sequential Steps**: Synthesizer waits for all inputs
+
+This dramatically reduces workflow time compared to sequential execution.
+
+### Custom Agent Prompts
+
+Place custom prompts in the `prompts/` directory:
+
+```
+your-project/
+├── prompts/
+│   ├── planner.md      # Planning agent instructions
+│   ├── challenger.md   # Challenge/critique instructions
+│   ├── reviewer.md     # Code review format
+│   ├── advocate.md     # Strength-finding instructions
+│   ├── synthesizer.md  # Synthesis instructions
+│   └── implementer.md  # Implementation guidelines
+```
+
+Each prompt file should define the agent's role, focus areas, and output format.
+
+### How Task Workflow Works
+
+Each iteration with collaboration enabled:
+
+1. **Planner** (Expert model) analyzes the task:
+   - Breaks down requirements into steps
+   - Identifies files to modify
+   - Creates implementation plan
+
+2. **Implementer** (Capable model) executes the plan:
+   - Actually modifies code files via CLI tools
+   - Handles edge cases from planner
+   - Runs tests if appropriate
+
+3. **Reviewer** (Capable model) checks the implementation:
+   - Reviews changes for correctness
+   - Identifies issues or improvements
+   - Approves or requests changes
+
+4. **If Approved** → Git Commit:
+   - All changes staged and committed
+   - Commit message: `[Ralph] <task summary>`
+   - Continues to next iteration
+
+5. **If Not Approved** → Fix Loop:
+   - Implementer addresses review feedback
+   - Reviewer checks again
+   - Repeats up to max review cycles
+
+### Git Commit Integration
+
+When the Reviewer approves changes, Ralph automatically:
+1. Stages all modified files (`git add -A`)
+2. Creates commit with descriptive message
+3. Shows commit status in output
+
+```
+▶ [Git] Committing approved changes...
+  ✓ Changes committed to git
+```
+
+Commit messages follow the format:
+```
+[Ralph] <first 100 chars of task description>
+
+Modified N file(s) via multi-agent workflow.
+```
+
+### Verification After Completion
+
+When the AI signals overall completion:
+
+1. **Workflow Verification** runs (if enabled):
+   - Multiple verifiers review the changes in parallel
+   - Challenger looks for missed edge cases
+   - Requires majority (or unanimous) approval
+
+2. **If Workflow Verification Passes**:
+   - **Final Task Verification** runs
+   - Checks all tasks in `implementation_plan.md`
+   - Ensures nothing marked incomplete
+
+3. **If Any Verification Fails**:
+   - Continue iterating with identified issues
+   - Required changes are logged
+
+This two-stage verification ensures both code quality (workflow) and task completeness (final).
 
 ## Testing & Debug Modes
 

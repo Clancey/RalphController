@@ -1,4 +1,5 @@
 using RalphController.Models;
+using RalphController.Workflow;
 
 namespace RalphController;
 
@@ -13,6 +14,7 @@ public class LoopController : IDisposable
     private readonly ResponseAnalyzer _responseAnalyzer;
     private readonly RateLimiter _rateLimiter;
     private readonly ModelSelector _modelSelector;
+    private WorkflowOrchestrator? _workflowOrchestrator;
     private AIProcess? _currentProcess;
     private OllamaClient? _ollamaClient;
     private CancellationTokenSource? _loopCts;
@@ -26,6 +28,8 @@ public class LoopController : IDisposable
     private bool _pendingFinalVerification;
     private bool _inFinalVerification;
     private bool _circuitBreakerVerificationDone;
+    private bool _pendingWorkflowVerification;
+    private string? _workflowVerificationContext;
 
     /// <summary>Current state of the loop</summary>
     public LoopState State { get; private set; } = LoopState.Idle;
@@ -66,6 +70,12 @@ public class LoopController : IDisposable
     /// <summary>Fired when final verification completes (allComplete, incompleteTasks)</summary>
     public event Action<bool, List<string>>? OnFinalVerificationComplete;
 
+    /// <summary>Fired when workflow verification starts</summary>
+    public event Action? OnWorkflowVerificationStart;
+
+    /// <summary>Fired when workflow verification completes (passed, approvalCount, totalReviewers)</summary>
+    public event Action<bool, int, int>? OnWorkflowVerificationComplete;
+
     /// <summary>Fired when an iteration completes</summary>
     public event Action<int, AIResult>? OnIterationComplete;
 
@@ -89,6 +99,14 @@ public class LoopController : IDisposable
         _responseAnalyzer = new ResponseAnalyzer();
         _rateLimiter = new RateLimiter(config.MaxCallsPerHour);
         _modelSelector = new ModelSelector(config.MultiModel, config.ProviderConfig);
+
+        // Initialize workflow orchestrator if collaboration is enabled
+        if (config.Collaboration?.Enabled == true)
+        {
+            _workflowOrchestrator = new WorkflowOrchestrator(config, config.Collaboration);
+            _workflowOrchestrator.OnOutput += msg => OnOutput?.Invoke(msg);
+            _workflowOrchestrator.OnError += msg => OnError?.Invoke(msg);
+        }
 
         // Wire up circuit breaker events
         _circuitBreaker.OnStateChanged += (state, reason) =>
@@ -125,6 +143,8 @@ public class LoopController : IDisposable
         _pendingFinalVerification = false;
         _inFinalVerification = false;
         _circuitBreakerVerificationDone = false;
+        _pendingWorkflowVerification = false;
+        _workflowVerificationContext = null;
 
         try
         {
@@ -386,6 +406,77 @@ public class LoopController : IDisposable
             ? currentModel.DisplayName
             : null;
         OnIterationStart?.Invoke(_statistics.CurrentIteration, modelName);
+
+        // Handle workflow verification (multi-agent approach)
+        if (_pendingWorkflowVerification && _workflowOrchestrator != null)
+        {
+            _pendingWorkflowVerification = false;
+            OnWorkflowVerificationStart?.Invoke();
+            OnOutput?.Invoke("");
+            OnOutput?.Invoke("╔══════════════════════════════════════════════════════════════╗");
+            OnOutput?.Invoke("║      MULTI-AGENT VERIFICATION - Running workflow review      ║");
+            OnOutput?.Invoke("╚══════════════════════════════════════════════════════════════╝");
+            OnOutput?.Invoke("");
+
+            try
+            {
+                var changedFiles = GetChangedFiles();
+                var verificationResult = await _workflowOrchestrator.RunVerificationWorkflowAsync(
+                    _workflowVerificationContext ?? "Completion detected",
+                    changedFiles,
+                    cancellationToken);
+
+                OnWorkflowVerificationComplete?.Invoke(
+                    verificationResult.Passed,
+                    verificationResult.ApprovingReviewers,
+                    verificationResult.TotalReviewers);
+
+                if (verificationResult.Passed)
+                {
+                    OnOutput?.Invoke("");
+                    OnOutput?.Invoke($"[Workflow Verification PASSED] {verificationResult.ApprovingReviewers}/{verificationResult.TotalReviewers} approved");
+
+                    // Now run final task verification if enabled
+                    if (_config.EnableFinalVerification)
+                    {
+                        _pendingFinalVerification = true;
+                        _circuitBreaker.Reset();
+                        OnOutput?.Invoke(">>> Workflow verification passed. Running final task verification...");
+                        // Continue to next iteration for final verification
+                        _statistics.CompleteIteration(true);
+                        return;
+                    }
+                    else
+                    {
+                        OnOutput?.Invoke("All verification complete!");
+                        Stop();
+                        return;
+                    }
+                }
+                else
+                {
+                    OnOutput?.Invoke("");
+                    OnOutput?.Invoke($"[Workflow Verification FAILED] {verificationResult.ApprovingReviewers}/{verificationResult.TotalReviewers} approved");
+                    if (verificationResult.RequiredChanges.Count > 0)
+                    {
+                        OnOutput?.Invoke("Required changes:");
+                        foreach (var change in verificationResult.RequiredChanges.Take(5))
+                        {
+                            OnOutput?.Invoke($"  - {change}");
+                        }
+                    }
+                    OnOutput?.Invoke("Continuing work on identified issues...");
+                    _statistics.CompleteIteration(false);
+                    // Don't stop - continue with regular prompt
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                OnError?.Invoke($"Workflow verification failed: {ex.Message}");
+                // Continue with regular iteration on failure
+            }
+        }
 
         // Get prompt (injected, final verification, or from file)
         string prompt;
@@ -741,8 +832,22 @@ public class LoopController : IDisposable
             if (analysis.ShouldExit && _config.AutoExitOnCompletion && result.Success)
             {
                 OnOutput?.Invoke($"[Analysis] Exit triggered: {analysis.ExitReason}");
-                // Check if we need to run multi-model verification first
-                if (_config.MultiModel?.Strategy == ModelSwitchStrategy.Verification)
+
+                // Check if we should use workflow verification (new multi-agent approach)
+                if (_config.Collaboration?.Verification?.Enabled == true && _workflowOrchestrator != null)
+                {
+                    _pendingWorkflowVerification = true;
+                    var outputSummary = result.Output.Length > 1000 ? result.Output[..1000] + "..." : result.Output;
+                    _workflowVerificationContext = $"Completion detected: {analysis.ExitReason}\n\nOutput summary:\n{outputSummary}";
+                    _responseAnalyzer.Reset();
+                    _circuitBreaker.Reset();
+                    OnOutput?.Invoke("");
+                    OnOutput?.Invoke($">>> Completion signal detected: {analysis.ExitReason}");
+                    OnOutput?.Invoke(">>> Scheduling multi-agent workflow verification...");
+                    return;
+                }
+                // Fallback to old single-model verification if configured
+                else if (_config.MultiModel?.Strategy == ModelSwitchStrategy.Verification)
                 {
                     _modelSelector.OnCompletionDetected(filesModified);
                     _responseAnalyzer.Reset(); // Reset to prevent re-triggering during verification
@@ -907,6 +1012,44 @@ public class LoopController : IDisposable
         }
     }
 
+    private List<string> GetChangedFiles()
+    {
+        var files = new List<string>();
+        try
+        {
+            var statusPsi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "status --porcelain",
+                WorkingDirectory = _config.TargetDirectory,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var statusProcess = System.Diagnostics.Process.Start(statusPsi);
+            if (statusProcess is not null)
+            {
+                var output = statusProcess.StandardOutput.ReadToEnd();
+                statusProcess.WaitForExit();
+
+                foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    // Format is "XY filename" where XY is status, skip first 3 chars
+                    if (line.Length > 3)
+                    {
+                        files.Add(line[3..].Trim());
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Ignore errors
+        }
+        return files;
+    }
+
     private async Task<string> GetPromptAsync()
     {
         var promptPath = _config.PromptFilePath;
@@ -984,6 +1127,7 @@ public class LoopController : IDisposable
         _iterationSkipCts?.Dispose();
         _currentProcess?.Dispose();
         _ollamaClient?.Dispose();
+        _workflowOrchestrator?.Dispose();
         _pauseTcs?.TrySetCanceled();
 
         GC.SuppressFinalize(this);

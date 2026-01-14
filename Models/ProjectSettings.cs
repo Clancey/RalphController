@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RalphController.Workflow;
 
 namespace RalphController.Models;
 
@@ -43,6 +44,9 @@ public class ProjectSettings
 
     /// <summary>Multi-model configuration (rotation, verification)</summary>
     public MultiModelConfig? MultiModel { get; set; }
+
+    /// <summary>Multi-agent collaboration workflow configuration</summary>
+    public CollaborationConfig? Collaboration { get; set; }
 
     /// <summary>When these settings were last updated</summary>
     public DateTime? LastUpdated { get; set; }

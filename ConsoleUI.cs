@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 using RalphController.Models;
+using RalphController.Workflow;
 using Spectre.Console;
 
 namespace RalphController;
@@ -31,6 +32,15 @@ public class ConsoleUI : IDisposable
     private string _selectedProvider = "";
     private ModelSpec? _selectedModel;
 
+    // Workflow mode state
+    private bool _isInWorkflowMode;
+    private int _workflowStep; // 0=menu, 1=input, 2=running
+    private WorkflowType _selectedWorkflowType;
+    private string _workflowInput = "";
+    private WorkflowOrchestrator? _workflowOrchestrator;
+    private Task? _workflowTask;
+    private CollaborationWorkflow? _currentWorkflow;
+
     /// <summary>
     /// Whether to automatically start the loop when RunAsync is called
     /// </summary>
@@ -41,6 +51,20 @@ public class ConsoleUI : IDisposable
         _controller = controller;
         _fileWatcher = fileWatcher;
         _config = config;
+
+        // Initialize workflow orchestrator if collaboration is enabled
+        if (config.Collaboration?.Enabled == true)
+        {
+            _workflowOrchestrator = new WorkflowOrchestrator(config, config.Collaboration);
+            _workflowOrchestrator.OnOutput += msg => AddOutputLine($"[cyan]WF:[/] {Markup.Escape(msg)}");
+            _workflowOrchestrator.OnError += msg => AddOutputLine($"[red]WF ERR:[/] {Markup.Escape(msg)}");
+            _workflowOrchestrator.OnStepStarted += step => AddOutputLine($"[cyan]>>> Step {step.StepNumber}: {step.Agent}[/]");
+            _workflowOrchestrator.OnStepCompleted += step =>
+            {
+                var status = step.Status == WorkflowStepStatus.Completed ? "[green]done[/]" : "[red]failed[/]";
+                AddOutputLine($"[cyan]<<< Step {step.StepNumber} {status} ({step.Duration.TotalSeconds:F1}s)[/]");
+            };
+        }
 
         // Subscribe to controller events - ANSI codes will be converted to Spectre markup
         // Buffer streaming output and emit complete lines
@@ -121,6 +145,12 @@ public class ConsoleUI : IDisposable
             return BuildInjectLayout();
         }
 
+        // If in workflow mode, show workflow layout
+        if (_isInWorkflowMode)
+        {
+            return BuildWorkflowLayout();
+        }
+
         var layout = new Layout("Root")
             .SplitRows(
                 new Layout("Header").Size(3),
@@ -185,6 +215,122 @@ public class ConsoleUI : IDisposable
         layout["Footer"].Update(new Panel(new Markup(footer).Centered()).Border(BoxBorder.Rounded).BorderColor(Color.Grey).Expand());
 
         return layout;
+    }
+
+    private Layout BuildWorkflowLayout()
+    {
+        var layout = new Layout("Root").SplitRows(
+            new Layout("Title").Size(5),
+            new Layout("Content"),
+            new Layout("Footer").Size(3)
+        );
+
+        // Title
+        var titlePanel = new Panel(
+            Align.Center(
+                new Text("COLLABORATION WORKFLOW", new Style(Color.Aqua)).Centered(),
+                VerticalAlignment.Middle
+            )
+        )
+        .Border(BoxBorder.Double)
+        .BorderColor(Color.Aqua)
+        .Expand();
+        layout["Title"].Update(titlePanel);
+
+        // Content based on step
+        string content = _workflowStep switch
+        {
+            0 => BuildWorkflowMenuContent(),
+            1 => BuildWorkflowInputContent(),
+            2 => BuildWorkflowRunningContent(),
+            _ => ""
+        };
+        layout["Content"].Update(new Panel(new Markup(content)).Border(BoxBorder.Rounded).BorderColor(Color.Aqua).Expand());
+
+        // Footer
+        string footer = _workflowStep switch
+        {
+            0 => "[dim]↑↓ Navigate | Enter=Select | Esc=Cancel[/]",
+            1 => "[dim]Type request | Enter=Submit | Esc=Cancel[/]",
+            2 => "[dim]Workflow running... | Esc=Cancel[/]",
+            _ => ""
+        };
+        layout["Footer"].Update(new Panel(new Markup(footer).Centered()).Border(BoxBorder.Rounded).BorderColor(Color.Grey).Expand());
+
+        return layout;
+    }
+
+    private string BuildWorkflowMenuContent()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("[bold cyan]Select workflow type:[/]");
+        sb.AppendLine();
+
+        var options = new[] {
+            ("Spec", "Plan a feature with challenger feedback", WorkflowType.Spec),
+            ("Review", "Multi-reviewer code review", WorkflowType.Review),
+            ("Consensus", "Gather multiple opinions on a proposal", WorkflowType.Consensus)
+        };
+
+        for (int i = 0; i < options.Length; i++)
+        {
+            var (name, desc, _) = options[i];
+            var isSelected = i == _selectedOptionIndex;
+            var prefix = isSelected ? "[cyan]>[/] " : "  ";
+            var formatted = isSelected
+                ? $"[bold cyan]{name}[/] - {desc}"
+                : $"{name} - [dim]{desc}[/]";
+            sb.AppendLine($"{prefix}{formatted}");
+        }
+
+        if (_workflowOrchestrator == null)
+        {
+            sb.AppendLine();
+            sb.AppendLine("[yellow]Note: Enable collaboration in config to use workflows[/]");
+        }
+
+        return sb.ToString();
+    }
+
+    private string BuildWorkflowInputContent()
+    {
+        var promptLabel = _selectedWorkflowType switch
+        {
+            WorkflowType.Spec => "Describe the feature you want to spec out:",
+            WorkflowType.Review => "Enter file patterns or commit range to review:",
+            WorkflowType.Consensus => "Enter the proposal or question to discuss:",
+            _ => "Enter your request:"
+        };
+
+        return $"[bold cyan]{promptLabel}[/]\n\n[cyan]> {Markup.Escape(_workflowInput)}_[/]";
+    }
+
+    private string BuildWorkflowRunningContent()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"[bold cyan]Running {_selectedWorkflowType} workflow...[/]");
+        sb.AppendLine();
+
+        if (_currentWorkflow != null)
+        {
+            sb.AppendLine($"[dim]Status: {_currentWorkflow.Status}[/]");
+            sb.AppendLine($"[dim]Steps: {_currentWorkflow.Steps.Count}[/]");
+            sb.AppendLine();
+
+            foreach (var step in _currentWorkflow.Steps.TakeLast(5))
+            {
+                var statusIcon = step.Status switch
+                {
+                    WorkflowStepStatus.Completed => "[green]✓[/]",
+                    WorkflowStepStatus.InProgress => "[yellow]►[/]",
+                    WorkflowStepStatus.Failed => "[red]✗[/]",
+                    _ => "[dim]○[/]"
+                };
+                sb.AppendLine($"  {statusIcon} Step {step.StepNumber}: {step.Agent} ({step.ModelName})");
+            }
+        }
+
+        return sb.ToString();
     }
 
     private string BuildProviderSelectionContent()
@@ -333,11 +479,12 @@ public class ConsoleUI : IDisposable
     private Panel BuildFooterPanel()
     {
         // Double brackets to escape them in Spectre.Console markup
+        var workflowKey = _config.Collaboration?.Enabled == true ? "  [[W]]orkflow" : "";
         var controls = _controller.State switch
         {
-            LoopState.Running => "[[P]]ause  [[N]]ext  [[S]]top  [[F]]orce Stop  [[I]]nject  [[Q]]uit",
-            LoopState.Paused => "[[R]]esume  [[S]]top  [[I]]nject  [[Q]]uit",
-            LoopState.Idle => "[[Enter]] Start  [[Q]]uit",
+            LoopState.Running => $"[[P]]ause  [[N]]ext  [[S]]top  [[F]]orce Stop  [[I]]nject{workflowKey}  [[Q]]uit",
+            LoopState.Paused => $"[[R]]esume  [[S]]top  [[I]]nject{workflowKey}  [[Q]]uit",
+            LoopState.Idle => $"[[Enter]] Start{workflowKey}  [[Q]]uit",
             LoopState.Stopping => "[[F]]orce Stop  [[Q]]uit",
             _ => "[[Q]]uit"
         };
@@ -366,6 +513,13 @@ public class ConsoleUI : IDisposable
         if (_isInInjectMode)
         {
             await HandleInjectInput(key);
+            return;
+        }
+
+        // Handle workflow mode input
+        if (_isInWorkflowMode)
+        {
+            await HandleWorkflowInput(key);
             return;
         }
 
@@ -416,6 +570,10 @@ public class ConsoleUI : IDisposable
                 StartInjectMode();
                 break;
 
+            case 'w':
+                StartWorkflowMode();
+                break;
+
             case 'q':
                 Stop();
                 break;
@@ -454,6 +612,149 @@ public class ConsoleUI : IDisposable
         _selectedProvider = "";
         _selectedModel = null;
         _injectOptions = new List<string>();
+    }
+
+    private void StartWorkflowMode()
+    {
+        _isInWorkflowMode = true;
+        _workflowStep = 0;
+        _selectedOptionIndex = 0;
+        _workflowInput = "";
+        _currentWorkflow = null;
+    }
+
+    private void EndWorkflowMode()
+    {
+        _isInWorkflowMode = false;
+        _workflowStep = 0;
+        _selectedOptionIndex = 0;
+        _workflowInput = "";
+        _currentWorkflow = null;
+    }
+
+    private async Task HandleWorkflowInput(ConsoleKeyInfo key)
+    {
+        // Handle Escape to cancel
+        if (key.Key == ConsoleKey.Escape)
+        {
+            EndWorkflowMode();
+            return;
+        }
+
+        // Step 0: Menu selection
+        if (_workflowStep == 0)
+        {
+            if (key.Key == ConsoleKey.UpArrow)
+            {
+                _selectedOptionIndex = Math.Max(0, _selectedOptionIndex - 1);
+            }
+            else if (key.Key == ConsoleKey.DownArrow)
+            {
+                _selectedOptionIndex = Math.Min(2, _selectedOptionIndex + 1);
+            }
+            else if (key.Key == ConsoleKey.Enter)
+            {
+                _selectedWorkflowType = _selectedOptionIndex switch
+                {
+                    0 => WorkflowType.Spec,
+                    1 => WorkflowType.Review,
+                    2 => WorkflowType.Consensus,
+                    _ => WorkflowType.Spec
+                };
+                _workflowStep = 1;
+                _workflowInput = "";
+            }
+            return;
+        }
+
+        // Step 1: Text input
+        if (_workflowStep == 1)
+        {
+            if (key.Key == ConsoleKey.Enter && !string.IsNullOrWhiteSpace(_workflowInput))
+            {
+                await StartWorkflowAsync();
+            }
+            else if (key.Key == ConsoleKey.Backspace)
+            {
+                if (_workflowInput.Length > 0)
+                    _workflowInput = _workflowInput[..^1];
+            }
+            else if (!char.IsControl(key.KeyChar))
+            {
+                _workflowInput += key.KeyChar;
+            }
+            return;
+        }
+
+        // Step 2: Running - just wait for completion
+    }
+
+    private async Task StartWorkflowAsync()
+    {
+        if (_workflowOrchestrator == null)
+        {
+            AddOutputLine("[yellow]Workflow not available - enable collaboration in config[/]");
+            EndWorkflowMode();
+            return;
+        }
+
+        _workflowStep = 2;
+        AddOutputLine($"[cyan]>>> Starting {_selectedWorkflowType} workflow...[/]");
+
+        try
+        {
+            switch (_selectedWorkflowType)
+            {
+                case WorkflowType.Spec:
+                    _workflowTask = Task.Run(async () =>
+                    {
+                        var result = await _workflowOrchestrator.RunSpecWorkflowAsync(_workflowInput);
+                        _currentWorkflow = result.Workflow;
+                        AddOutputLine($"[green]>>> Spec workflow complete![/]");
+                        AddOutputLine($"[cyan]Tasks extracted: {result.Tasks.Count}[/]");
+                        foreach (var task in result.Tasks.Take(5))
+                        {
+                            AddOutputLine($"  - {Markup.Escape(task.Title)}");
+                        }
+                        EndWorkflowMode();
+                    });
+                    break;
+
+                case WorkflowType.Review:
+                    var files = _workflowInput.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+                    _workflowTask = Task.Run(async () =>
+                    {
+                        var result = await _workflowOrchestrator.RunReviewWorkflowAsync(files);
+                        _currentWorkflow = result.Workflow;
+                        AddOutputLine($"[green]>>> Review workflow complete![/]");
+                        AddOutputLine($"[cyan]Findings: {result.Findings.Count}[/]");
+                        AddOutputLine($"[cyan]Verdict: {(result.Approved ? "[green]APPROVED[/]" : "[red]NEEDS WORK[/]")}[/]");
+                        foreach (var finding in result.Findings.Take(5))
+                        {
+                            AddOutputLine($"  [{finding.Severity}] {Markup.Escape(finding.Title)}");
+                        }
+                        EndWorkflowMode();
+                    });
+                    break;
+
+                case WorkflowType.Consensus:
+                    _workflowTask = Task.Run(async () =>
+                    {
+                        var result = await _workflowOrchestrator.RunConsensusWorkflowAsync(_workflowInput);
+                        _currentWorkflow = result.Workflow;
+                        AddOutputLine($"[green]>>> Consensus workflow complete![/]");
+                        AddOutputLine($"[cyan]Opinions gathered: {result.Opinions.Count}[/]");
+                        AddOutputLine($"[cyan]Agreements: {result.Agreements.Count}, Disagreements: {result.Disagreements.Count}[/]");
+                        EndWorkflowMode();
+                    });
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            AddOutputLine($"[red]Workflow failed: {Markup.Escape(ex.Message)}[/]");
+            EndWorkflowMode();
+        }
     }
 
     private async Task HandleInjectInput(ConsoleKeyInfo key)
@@ -914,6 +1215,7 @@ public class ConsoleUI : IDisposable
 
         _uiCts?.Cancel();
         _uiCts?.Dispose();
+        _workflowOrchestrator?.Dispose();
 
         GC.SuppressFinalize(this);
     }

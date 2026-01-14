@@ -1,4 +1,5 @@
 using RalphController.Models;
+using RalphController.Workflow;
 
 namespace RalphController;
 
@@ -18,6 +19,9 @@ public record RalphConfig
 
     /// <summary>Multi-model configuration (rotation, verification)</summary>
     public MultiModelConfig? MultiModel { get; init; }
+
+    /// <summary>Agent collaboration workflow configuration</summary>
+    public CollaborationConfig? Collaboration { get; init; }
 
     /// <summary>Path to AI CLI executable (overrides provider default)</summary>
     public string? ExecutablePath { get; init; }
@@ -84,13 +88,16 @@ public static class ProjectValidator
     /// </summary>
     public static ProjectStructure ValidateProject(RalphConfig config)
     {
+        var promptsPath = Path.Combine(config.TargetDirectory, "prompts");
         return new ProjectStructure
         {
             TargetDirectory = config.TargetDirectory,
             HasAgentsMd = File.Exists(config.AgentsFilePath),
             HasSpecsDirectory = Directory.Exists(config.SpecsDirectoryPath),
             HasPromptMd = File.Exists(config.PromptFilePath),
-            HasImplementationPlan = File.Exists(config.PlanFilePath)
+            HasImplementationPlan = File.Exists(config.PlanFilePath),
+            HasPromptsDirectory = Directory.Exists(promptsPath) &&
+                Directory.EnumerateFiles(promptsPath, "*.md").Any()
         };
     }
 

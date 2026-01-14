@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using RalphController;
 using RalphController.Models;
+using RalphController.Workflow;
 using Spectre.Console;
 
 // Set console encoding to UTF-8 for proper Unicode character support on Windows
@@ -149,6 +150,40 @@ static Task<List<string>> GetCursorModels()
     return Task.FromResult(models);
 }
 
+static Task<List<string>> GetCopilotModels()
+{
+    // GitHub Copilot supports various models via Copilot Chat
+    // See: https://docs.github.com/en/copilot/reference/ai-models/model-comparison
+    var models = new List<string>
+    {
+        // OpenAI models
+        "gpt-4.1",              // GPT-4.1
+        "gpt-5",                // GPT-5
+        "gpt-5-codex",          // GPT-5 Codex
+        "gpt-5-mini",           // GPT-5 mini
+        "gpt-5.1",              // GPT-5.1
+        "gpt-5.1-codex",        // GPT-5.1 Codex
+        "gpt-5.1-codex-max",    // GPT-5.1 Codex Max
+        "gpt-5.1-codex-mini",   // GPT-5.1 Codex Mini
+        "gpt-5.2",              // GPT-5.2
+        // Anthropic models
+        "claude-haiku-4.5",     // Claude Haiku 4.5
+        "claude-opus-4.1",      // Claude Opus 4.1
+        "claude-opus-4.5",      // Claude Opus 4.5
+        "claude-sonnet-4.0",    // Claude Sonnet 4.0
+        "claude-sonnet-4.5",    // Claude Sonnet 4.5
+        // Google models
+        "gemini-2.5-pro",       // Gemini 2.5 Pro
+        "gemini-3-flash",       // Gemini 3 Flash
+        "gemini-3-pro",         // Gemini 3 Pro
+        // Other models
+        "grok-code-fast-1",     // Grok Code Fast 1
+        "qwen2.5",              // Qwen 2.5
+        "raptor-mini"           // Raptor mini
+    };
+    return Task.FromResult(models);
+}
+
 static bool IsProviderInstalled(AIProvider provider)
 {
     var command = provider switch
@@ -220,190 +255,6 @@ static List<AIProvider> GetInstalledProviders()
         }
     }
     return providers;
-}
-
-static async Task<ModelSpec?> PromptForModelSpec(string label, string? defaultOllamaUrl = null)
-{
-    // Get installed providers and build choices
-    var installedProviders = GetInstalledProviders();
-    var providerChoices = new List<string> { "← Go back" };
-    providerChoices.AddRange(installedProviders.Select(p => p.ToString()));
-
-    if (installedProviders.Count == 0)
-    {
-        providerChoices.Add("Ollama");  // Always available via HTTP
-    }
-
-    var providerChoice = AnsiConsole.Prompt(
-        new SelectionPrompt<string>()
-            .Title($"[yellow]{label} - Select provider:[/]")
-            .AddChoices(providerChoices));
-
-    if (providerChoice == "← Go back")
-    {
-        return null;
-    }
-
-    var selectedProvider = Enum.Parse<AIProvider>(providerChoice);
-    string? model = null;
-    string? url = null;
-
-    // Get model based on provider
-    switch (selectedProvider)
-    {
-        case AIProvider.Claude:
-            var clModels = new List<string> { "← Go back" };
-            clModels.AddRange(await GetClaudeModels());
-            clModels.Add("Enter custom model...");
-            model = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]Select Claude model:[/]")
-                    .AddChoices(clModels));
-            if (model == "← Go back") return null;
-            if (model == "Enter custom model...")
-            {
-                model = AnsiConsole.Prompt(
-                    new TextPrompt<string>("[yellow]Enter model name:[/]")
-                        .DefaultValue("sonnet"));
-            }
-            break;
-
-        case AIProvider.Codex:
-            var cxModels = new List<string> { "← Go back" };
-            cxModels.AddRange(await GetCodexModels());
-            cxModels.Add("Enter custom model...");
-            model = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]Select Codex model:[/]")
-                    .AddChoices(cxModels));
-            if (model == "← Go back") return null;
-            if (model == "Enter custom model...")
-            {
-                model = AnsiConsole.Prompt(
-                    new TextPrompt<string>("[yellow]Enter model name:[/]")
-                        .DefaultValue("o3"));
-            }
-            break;
-
-        case AIProvider.Copilot:
-            var copilotModels = new List<string>
-            {
-                "← Go back",
-                "gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2",
-                "claude-sonnet-4", "claude-opus-4.5",
-                "Enter custom model..."
-            };
-            model = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]Select Copilot model:[/]")
-                    .AddChoices(copilotModels));
-            if (model == "← Go back") return null;
-            if (model == "Enter custom model...")
-            {
-                model = AnsiConsole.Prompt(
-                    new TextPrompt<string>("[yellow]Enter model name:[/]")
-                        .DefaultValue("gpt-5"));
-            }
-            break;
-
-        case AIProvider.Gemini:
-            var gmModels = new List<string> { "← Go back" };
-            gmModels.AddRange(await GetGeminiModels());
-            gmModels.Add("Enter custom model...");
-            model = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]Select Gemini model:[/]")
-                    .AddChoices(gmModels));
-            if (model == "← Go back") return null;
-            if (model == "Enter custom model...")
-            {
-                model = AnsiConsole.Prompt(
-                    new TextPrompt<string>("[yellow]Enter model name:[/]")
-                        .DefaultValue("gemini-2.5-pro"));
-            }
-            break;
-
-        case AIProvider.Cursor:
-            var cursorModels = new List<string> { "← Go back" };
-            cursorModels.AddRange(await GetCursorModels());
-            cursorModels.Add("Enter custom model...");
-            model = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]Select Cursor model:[/]")
-                    .AddChoices(cursorModels));
-            if (model == "← Go back") return null;
-            if (model == "Enter custom model...")
-            {
-                model = AnsiConsole.Prompt(
-                    new TextPrompt<string>("[yellow]Enter model name:[/]")
-                        .DefaultValue("claude-sonnet"));
-            }
-            break;
-
-        case AIProvider.OpenCode:
-            var ocModels = new List<string> { "← Go back" };
-            ocModels.AddRange(await GetOpenCodeModels());
-            ocModels.Add("Enter custom model...");
-            model = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]Select OpenCode model:[/]")
-                    .PageSize(15)
-                    .AddChoices(ocModels));
-            if (model == "← Go back") return null;
-            if (model == "Enter custom model...")
-            {
-                model = AnsiConsole.Prompt(
-                    new TextPrompt<string>("[yellow]Enter model (provider/model):[/]")
-                        .DefaultValue("ollama/llama3.1:70b"));
-            }
-            break;
-
-        case AIProvider.Ollama:
-            url = AnsiConsole.Prompt(
-                new TextPrompt<string>("[yellow]Ollama API URL (or 'back' to go back):[/]")
-                    .DefaultValue(defaultOllamaUrl ?? "http://localhost:11434"));
-            if (url.Equals("back", StringComparison.OrdinalIgnoreCase)) return null;
-            var olModels = await GetOllamaModels(url);
-            var olModelChoices = new List<string> { "← Go back" };
-            if (olModels.Count > 0)
-            {
-                olModelChoices.AddRange(olModels);
-                olModelChoices.Add("Enter custom model...");
-                model = AnsiConsole.Prompt(
-                    new SelectionPrompt<string>()
-                        .Title("[yellow]Select Ollama model:[/]")
-                        .PageSize(15)
-                        .AddChoices(olModelChoices));
-                if (model == "← Go back") return null;
-                if (model == "Enter custom model...")
-                {
-                    model = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[yellow]Enter model name:[/]")
-                            .DefaultValue("llama3.1:8b"));
-                }
-            }
-            else
-            {
-                model = AnsiConsole.Prompt(
-                    new TextPrompt<string>("[yellow]Enter model name (or 'back' to go back):[/]")
-                        .DefaultValue("llama3.1:8b"));
-                if (model.Equals("back", StringComparison.OrdinalIgnoreCase)) return null;
-            }
-            break;
-    }
-
-    // Create a descriptive label using the actual model name
-    var displayLabel = !string.IsNullOrEmpty(model)
-        ? model  // Use actual model name (e.g., "sonnet", "opus", "gpt-4o")
-        : selectedProvider.ToString();  // Fallback to provider name
-
-    return new ModelSpec
-    {
-        Provider = selectedProvider,
-        Model = model ?? "",
-        BaseUrl = url,
-        Label = displayLabel
-    };
 }
 
 static async Task<List<string>> GetOpenCodeModels()
@@ -516,6 +367,152 @@ static async Task<List<string>> GetOllamaModels(string baseUrl)
         AnsiConsole.MarkupLine($"[dim]Could not fetch models from server: {ex.Message}[/]");
         return new List<string>();
     }
+}
+
+/// <summary>
+/// Interactive manual configuration of agent roles
+/// </summary>
+static Task ConfigureAgentsManuallyAsync(
+    ProjectSettings projectSettings,
+    List<ModelSpec> availableModels)
+{
+    var modelChoices = availableModels.Select(m => m.DisplayName).ToList();
+    modelChoices.Insert(0, "(skip - use default)");
+
+    AnsiConsole.MarkupLine("\n[blue]Configure agents for each role.[/]");
+    AnsiConsole.MarkupLine("[dim]You can assign multiple models to each role. Same model can be used for multiple roles.[/]\n");
+
+    var allRoles = Enum.GetValues<AgentRole>();
+
+    foreach (var role in allRoles)
+    {
+        var roleAgents = new List<AgentConfig>();
+        var addMore = true;
+        var agentNum = 1;
+
+        while (addMore)
+        {
+            var prompt = agentNum == 1
+                ? $"[yellow]{role}[/] - Select model for agent #{agentNum}:"
+                : $"[yellow]{role}[/] - Add another agent? (#{agentNum}):";
+
+            var selectedModel = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title(prompt)
+                    .PageSize(10)
+                    .AddChoices(modelChoices));
+
+            if (selectedModel == "(skip - use default)")
+            {
+                if (agentNum == 1)
+                {
+                    // Use default for this role
+                    roleAgents.Add(new AgentConfig());
+                }
+                addMore = false;
+            }
+            else
+            {
+                var model = availableModels.FirstOrDefault(m => m.DisplayName == selectedModel);
+                if (model != null)
+                {
+                    roleAgents.Add(new AgentConfig { Model = model });
+                    agentNum++;
+
+                    // Ask if they want to add more agents to this role
+                    if (agentNum <= 5) // Max 5 agents per role
+                    {
+                        addMore = AnsiConsole.Confirm($"Add another agent to [cyan]{role}[/]?", false);
+                    }
+                    else
+                    {
+                        addMore = false;
+                    }
+                }
+                else
+                {
+                    addMore = false;
+                }
+            }
+        }
+
+        if (roleAgents.Count > 0)
+        {
+            projectSettings.Collaboration!.Agents[role] = roleAgents;
+            var modelNames = string.Join(", ", roleAgents.Select(a => a.Model?.DisplayName ?? "default"));
+            AnsiConsole.MarkupLine($"  [green]✓[/] {role}: {modelNames}");
+        }
+    }
+
+    AnsiConsole.MarkupLine("\n[green]Agent roles configured![/]");
+    return Task.CompletedTask;
+}
+
+/// <summary>
+/// Assign models to agent roles using simple heuristics
+/// Supports multiple agents per role and same model for multiple roles
+/// </summary>
+static Dictionary<AgentRole, List<AgentConfig>> AssignModelsToRoles(
+    List<ModelSpec> availableModels,
+    ModelSpec? orchestratorModel)
+{
+    var assignments = new Dictionary<AgentRole, List<AgentConfig>>();
+
+    if (availableModels.Count == 0) return assignments;
+
+    // Simple heuristics based on model names
+    // Larger/pro models for complex tasks, smaller/flash for quick tasks
+    var sortedModels = availableModels.OrderByDescending(m =>
+    {
+        var name = m.Model?.ToLowerInvariant() ?? "";
+        // Score models by capability (higher = more capable)
+        if (name.Contains("opus") || name.Contains("pro") || name.Contains("70b") || name.Contains("32b"))
+            return 100;
+        if (name.Contains("sonnet") || name.Contains("13b") || name.Contains("14b") || name.Contains("30b"))
+            return 75;
+        if (name.Contains("haiku") || name.Contains("flash") || name.Contains("8b") || name.Contains("7b"))
+            return 50;
+        return 25;
+    }).ToList();
+
+    // Assign roles based on model capabilities
+    // Same model can be assigned to multiple roles
+    var mostCapable = sortedModels.FirstOrDefault();
+    var secondMost = sortedModels.Skip(1).FirstOrDefault() ?? mostCapable;
+    var thirdMost = sortedModels.Skip(2).FirstOrDefault() ?? secondMost;
+
+    // Planner/Synthesizer: Most capable model (needs to understand full context)
+    if (mostCapable != null)
+    {
+        assignments[AgentRole.Planner] = new List<AgentConfig> { new() { Model = mostCapable } };
+        assignments[AgentRole.Synthesizer] = new List<AgentConfig> { new() { Model = mostCapable } };
+    }
+
+    // Challenger: Second most capable
+    if (secondMost != null)
+    {
+        assignments[AgentRole.Challenger] = new List<AgentConfig> { new() { Model = secondMost } };
+    }
+
+    // Reviewers: Multiple agents if we have multiple models
+    var reviewerAgents = new List<AgentConfig>();
+    foreach (var model in sortedModels.Take(Math.Min(3, availableModels.Count)))
+    {
+        reviewerAgents.Add(new AgentConfig { Model = model });
+    }
+    if (reviewerAgents.Count > 0)
+    {
+        assignments[AgentRole.Reviewer] = reviewerAgents;
+    }
+
+    // Implementer/Advocate: Can use any capable model
+    if (thirdMost != null)
+    {
+        assignments[AgentRole.Implementer] = new List<AgentConfig> { new() { Model = thirdMost } };
+        assignments[AgentRole.Advocate] = new List<AgentConfig> { new() { Model = thirdMost } };
+    }
+
+    return assignments;
 }
 
 // Check for test modes
@@ -1009,48 +1006,430 @@ var projectSettings = ProjectSettings.Load(targetDir);
 var globalSettings = GlobalSettings.Load();
 var savedProvider = freshMode ? null : projectSettings.Provider;
 
+// First, ask about collaboration mode (before provider/model selection)
+bool useMultiModelCollaboration = false;
+if (!noTui && (freshMode || projectSettings.Collaboration == null))
+{
+    AnsiConsole.WriteLine();
+    AnsiConsole.Write(new Panel(
+        "[white]Multi-model collaboration allows you to use different AI models for different roles:\n" +
+        "• [cyan]Planner[/] - designs implementation strategy\n" +
+        "• [cyan]Challenger[/] - finds edge cases and issues\n" +
+        "• [cyan]Reviewer[/] - verifies code quality\n" +
+        "• [cyan]Implementer[/] - writes the actual code\n\n" +
+        "You can select models from [yellow]any provider[/] and assign them to optimal roles.[/]")
+        .Header("[yellow]Multi-Model Collaboration[/]")
+        .BorderColor(Color.Blue));
+
+    var modeChoice = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("\n[yellow]How would you like to work?[/]")
+            .AddChoices(
+                "Multi-model collaboration (recommended) - use multiple models for different roles",
+                "Single model only - use just one model for everything"));
+
+    useMultiModelCollaboration = modeChoice.StartsWith("Multi-model");
+
+    if (!useMultiModelCollaboration)
+    {
+        projectSettings.MultiModel = new MultiModelConfig { Strategy = ModelSwitchStrategy.None };
+        projectSettings.Collaboration = new CollaborationConfig { Enabled = false };
+        AnsiConsole.MarkupLine("\n[green]✓ Single model mode[/]");
+    }
+}
+else if (projectSettings.Collaboration?.Enabled == true)
+{
+    // Use saved collaboration setting
+    useMultiModelCollaboration = true;
+    AnsiConsole.MarkupLine("[dim]Using saved collaboration mode: multi-model[/]");
+}
+
+// Variables for model selection
+string? claudeModel = null;
+string? codexModel = null;
+string? geminiModel = null;
+string? cursorModel = null;
+string? copilotModel = null;
+string? openCodeModel = null;
+string? ollamaModel = null;
+string? ollamaUrl = globalSettings.LastOllamaUrl ?? "http://localhost:11434";
+
 // Determine provider: command line > saved > prompt
-AIProvider provider;
+AIProvider provider = AIProvider.Claude; // Default
 var providerWasSelected = false;
 
-if (providerFromArgs.HasValue)
+// Handle multi-model collaboration setup OR single model selection
+if (useMultiModelCollaboration && !noTui)
 {
-    // Use command line argument
-    provider = providerFromArgs.Value;
-}
-else if (savedProvider.HasValue)
-{
-    // Use saved provider from project settings
-    provider = savedProvider.Value;
-    AnsiConsole.MarkupLine($"[dim]Using saved provider from .ralph.json[/]");
-}
-else
-{
-    // Detect installed providers
-    AnsiConsole.MarkupLine("[dim]Detecting installed providers...[/]");
-    var installedProviders = GetInstalledProviders();
+    // Multi-model collaboration: skip provider selection, gather from ALL providers
+    AnsiConsole.MarkupLine("\n[blue]Setting up multi-model collaboration...[/]");
 
-    if (installedProviders.Count == 0)
+    // Ask about local Ollama/LM Studio
+    if (AnsiConsole.Confirm("\n[yellow]Do you have a local Ollama or LM Studio server?[/]",
+        !string.IsNullOrEmpty(globalSettings.LastOllamaUrl)))
     {
-        AnsiConsole.MarkupLine("[red]No AI providers found![/]");
-        AnsiConsole.MarkupLine("[dim]Install one of: claude, codex, copilot, gemini, or opencode CLI tools.[/]");
-        AnsiConsole.MarkupLine("[dim]Or use Ollama/LMStudio which is always available via HTTP API.[/]");
-        installedProviders.Add(AIProvider.Ollama);  // Fallback to Ollama
+        ollamaUrl = AnsiConsole.Prompt(
+            new TextPrompt<string>("[yellow]Enter Ollama/LM Studio URL:[/]")
+                .DefaultValue(ollamaUrl ?? "http://localhost:11434"));
+        globalSettings.LastOllamaUrl = ollamaUrl;
+    }
+    else
+    {
+        ollamaUrl = null; // Don't check Ollama
     }
 
-    // Prompt for provider
-    provider = AnsiConsole.Prompt(
-        new SelectionPrompt<AIProvider>()
-            .Title("[yellow]Select AI provider:[/]")
-            .AddChoices(installedProviders));
-    providerWasSelected = true;
+    AnsiConsole.MarkupLine("\n[dim]Discovering models from all available providers...[/]");
+
+    var allAvailableModels = new List<ModelSpec>();
+
+    // Gather from all providers
+    await AnsiConsole.Status()
+        .Spinner(Spinner.Known.Dots)
+        .StartAsync("Discovering models...", async ctx =>
+        {
+            // Claude
+            ctx.Status("Checking Claude...");
+            try
+            {
+                var claudeModels = await GetClaudeModels();
+                foreach (var m in claudeModels)
+                    allAvailableModels.Add(new ModelSpec { Provider = AIProvider.Claude, Model = m });
+            }
+            catch { }
+
+            // Codex
+            ctx.Status("Checking Codex...");
+            try
+            {
+                var codexModels = await GetCodexModels();
+                foreach (var m in codexModels)
+                    allAvailableModels.Add(new ModelSpec { Provider = AIProvider.Codex, Model = m });
+            }
+            catch { }
+
+            // Copilot
+            ctx.Status("Checking Copilot...");
+            try
+            {
+                var copilotModels = await GetCopilotModels();
+                foreach (var m in copilotModels)
+                    allAvailableModels.Add(new ModelSpec { Provider = AIProvider.Copilot, Model = m });
+            }
+            catch { }
+
+            // Gemini
+            ctx.Status("Checking Gemini...");
+            try
+            {
+                var geminiModels = await GetGeminiModels();
+                foreach (var m in geminiModels)
+                    allAvailableModels.Add(new ModelSpec { Provider = AIProvider.Gemini, Model = m });
+            }
+            catch { }
+
+            // Cursor
+            ctx.Status("Checking Cursor...");
+            try
+            {
+                var cursorModels = await GetCursorModels();
+                foreach (var m in cursorModels)
+                    allAvailableModels.Add(new ModelSpec { Provider = AIProvider.Cursor, Model = m });
+            }
+            catch { }
+
+            // OpenCode
+            ctx.Status("Checking OpenCode...");
+            try
+            {
+                var openCodeModels = await GetOpenCodeModels();
+                foreach (var m in openCodeModels)
+                    allAvailableModels.Add(new ModelSpec { Provider = AIProvider.OpenCode, Model = m });
+            }
+            catch { }
+
+            // Ollama (if URL is configured)
+            if (!string.IsNullOrEmpty(ollamaUrl))
+            {
+                ctx.Status("Checking Ollama...");
+                try
+                {
+                    var ollamaModels = await GetOllamaModels(ollamaUrl);
+                    foreach (var m in ollamaModels)
+                        allAvailableModels.Add(new ModelSpec { Provider = AIProvider.Ollama, Model = m, BaseUrl = ollamaUrl });
+                }
+                catch { }
+            }
+        });
+
+    if (allAvailableModels.Count < 2)
+    {
+        AnsiConsole.MarkupLine("[yellow]Not enough models found for multi-model collaboration.[/]");
+        AnsiConsole.MarkupLine("[yellow]Falling back to single model mode.[/]");
+        useMultiModelCollaboration = false;
+        projectSettings.MultiModel = new MultiModelConfig { Strategy = ModelSwitchStrategy.None };
+        projectSettings.Collaboration = new CollaborationConfig { Enabled = false };
+    }
+    else
+    {
+        AnsiConsole.MarkupLine($"[green]Found {allAvailableModels.Count} models across providers[/]\n");
+
+        // Multi-select models - dynamically add groups for providers that have models
+        var multiSelectPrompt = new MultiSelectionPrompt<string>()
+            .Title("[yellow]Select models to include in your collaboration pool:[/]")
+            .PageSize(25)
+            .Required()
+            .InstructionsText("[grey](Press <space> to toggle, <enter> to confirm - select at least 2)[/]");
+
+        // Add choice groups for each provider that has models
+        var providerGroups = allAvailableModels
+            .GroupBy(m => m.Provider)
+            .OrderBy(g => g.Key.ToString());
+
+        foreach (var group in providerGroups)
+        {
+            var models = group.Select(m => m.DisplayName).ToList();
+            if (models.Count > 0)
+            {
+                multiSelectPrompt.AddChoiceGroup(group.Key.ToString(), models);
+            }
+        }
+
+        var selectedModelNames = AnsiConsole.Prompt(multiSelectPrompt);
+
+        var selectedModels = allAvailableModels
+            .Where(m => selectedModelNames.Contains(m.DisplayName))
+            .ToList();
+
+        if (selectedModels.Count < 2)
+        {
+            AnsiConsole.MarkupLine("[yellow]Need at least 2 models. Falling back to single model mode.[/]");
+            useMultiModelCollaboration = false;
+            projectSettings.MultiModel = new MultiModelConfig { Strategy = ModelSwitchStrategy.None };
+            projectSettings.Collaboration = new CollaborationConfig { Enabled = false };
+        }
+        else
+        {
+            AnsiConsole.MarkupLine($"\n[green]Selected {selectedModels.Count} models:[/]");
+            foreach (var m in selectedModels)
+                AnsiConsole.MarkupLine($"  • {m.DisplayName}");
+
+            // Select primary model (used for main iterations)
+            var primaryModelName = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("\n[yellow]Which model should be the primary (main worker)?[/]")
+                    .AddChoices(selectedModels.Select(m => m.DisplayName)));
+
+            var primaryModel = selectedModels.First(m => m.DisplayName == primaryModelName);
+
+            // Reorder so primary is first
+            selectedModels.Remove(primaryModel);
+            selectedModels.Insert(0, primaryModel);
+
+            AnsiConsole.MarkupLine($"[green]Primary model:[/] {primaryModel.DisplayName}");
+
+            // Set the provider and model variables based on primary model
+            provider = primaryModel.Provider;
+            providerWasSelected = true;
+            switch (primaryModel.Provider)
+            {
+                case AIProvider.Claude:
+                    claudeModel = primaryModel.Model;
+                    projectSettings.ClaudeModel = claudeModel;
+                    break;
+                case AIProvider.Codex:
+                    codexModel = primaryModel.Model;
+                    projectSettings.CodexModel = codexModel;
+                    break;
+                case AIProvider.Copilot:
+                    copilotModel = primaryModel.Model;
+                    projectSettings.CopilotModel = copilotModel;
+                    break;
+                case AIProvider.Gemini:
+                    geminiModel = primaryModel.Model;
+                    projectSettings.GeminiModel = geminiModel;
+                    break;
+                case AIProvider.Cursor:
+                    cursorModel = primaryModel.Model;
+                    projectSettings.CursorModel = cursorModel;
+                    break;
+                case AIProvider.Ollama:
+                    ollamaModel = primaryModel.Model;
+                    ollamaUrl = primaryModel.BaseUrl;
+                    projectSettings.OllamaModel = ollamaModel;
+                    projectSettings.OllamaUrl = ollamaUrl;
+                    break;
+                case AIProvider.OpenCode:
+                    openCodeModel = primaryModel.Model;
+                    projectSettings.OpenCodeModel = openCodeModel;
+                    break;
+            }
+
+            // Configure MultiModelConfig
+            projectSettings.MultiModel = new MultiModelConfig
+            {
+                Strategy = ModelSwitchStrategy.RoundRobin,
+                Models = selectedModels
+            };
+
+            // Configure agent roles
+            var roleSetupChoice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("\n[yellow]Agent role assignment:[/]")
+                    .AddChoices(
+                        "AI-assisted (recommended) - automatically assign models to optimal roles",
+                        "Manual - configure each role yourself"));
+
+            projectSettings.Collaboration = new CollaborationConfig { Enabled = true };
+
+            if (roleSetupChoice.StartsWith("AI-assisted"))
+            {
+                AnsiConsole.MarkupLine("\n[dim]Analyzing models for optimal role assignment...[/]");
+                var roleAssignment = AssignModelsToRoles(selectedModels, primaryModel);
+                projectSettings.Collaboration.Agents = roleAssignment;
+
+                AnsiConsole.MarkupLine("[green]Agent roles configured:[/]");
+                foreach (var (role, agentConfigs) in roleAssignment)
+                {
+                    var modelNamesStr = string.Join(", ", agentConfigs.Select(a => a.Model?.DisplayName ?? "default"));
+                    var count = agentConfigs.Count > 1 ? $" ({agentConfigs.Count} agents)" : "";
+                    AnsiConsole.MarkupLine($"  [cyan]{role}[/]: {modelNamesStr}{count}");
+                }
+            }
+            else
+            {
+                await ConfigureAgentsManuallyAsync(projectSettings, selectedModels);
+            }
+
+            // Configure workflows
+            AnsiConsole.MarkupLine("\n[blue]Configure workflows:[/]");
+
+            var workflowChoice = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]Which workflows do you want to enable?[/]")
+                    .AddChoices(
+                        "Verification only - multiple agents verify completion",
+                        "Full collaboration - spec, review, and verification workflows",
+                        "Custom - choose individual workflows"));
+
+            if (workflowChoice.StartsWith("Verification"))
+            {
+                projectSettings.Collaboration.Verification = new VerificationWorkflowConfig
+                {
+                    Enabled = true,
+                    ReviewerCount = Math.Min(2, selectedModels.Count),
+                    EnableChallenger = true,
+                    ParallelExecution = true
+                };
+                AnsiConsole.MarkupLine("[green]Verification workflow enabled[/]");
+            }
+            else if (workflowChoice.StartsWith("Full"))
+            {
+                projectSettings.Collaboration.Verification = new VerificationWorkflowConfig
+                {
+                    Enabled = true,
+                    ReviewerCount = Math.Min(2, selectedModels.Count),
+                    EnableChallenger = true,
+                    ParallelExecution = true
+                };
+                projectSettings.Collaboration.Review = new ReviewWorkflowConfig
+                {
+                    ReviewerCount = Math.Min(2, selectedModels.Count),
+                    ExpertValidation = true
+                };
+                projectSettings.Collaboration.Spec = new SpecWorkflowConfig
+                {
+                    EnableChallenger = true,
+                    MaxRefinements = 2
+                };
+                AnsiConsole.MarkupLine("[green]Full collaboration enabled[/] - spec, review, and verification");
+            }
+            else
+            {
+                if (AnsiConsole.Confirm("Enable [cyan]verification workflow[/]?", true))
+                {
+                    projectSettings.Collaboration.Verification = new VerificationWorkflowConfig
+                    {
+                        Enabled = true,
+                        ReviewerCount = Math.Min(2, selectedModels.Count),
+                        EnableChallenger = AnsiConsole.Confirm("Include challenger?", true),
+                        ParallelExecution = AnsiConsole.Confirm("Run in parallel?", true)
+                    };
+                }
+
+                if (AnsiConsole.Confirm("Enable [cyan]review workflow[/]?", false))
+                {
+                    projectSettings.Collaboration.Review = new ReviewWorkflowConfig
+                    {
+                        ReviewerCount = Math.Min(2, selectedModels.Count),
+                        ExpertValidation = true
+                    };
+                }
+
+                if (AnsiConsole.Confirm("Enable [cyan]spec workflow[/]?", false))
+                {
+                    projectSettings.Collaboration.Spec = new SpecWorkflowConfig
+                    {
+                        EnableChallenger = true,
+                        MaxRefinements = 2
+                    };
+                }
+            }
+
+            // Show summary
+            AnsiConsole.WriteLine();
+            var enabledWorkflows = new List<string>();
+            if (projectSettings.Collaboration.Verification?.Enabled == true) enabledWorkflows.Add("verification");
+            if (projectSettings.Collaboration.Review != null) enabledWorkflows.Add("review");
+            if (projectSettings.Collaboration.Spec != null) enabledWorkflows.Add("spec");
+            var workflowSummary = enabledWorkflows.Count > 0 ? string.Join(", ", enabledWorkflows) : "none";
+
+            AnsiConsole.Write(new Panel(
+                $"[green]Primary model:[/] {primaryModel.DisplayName}\n" +
+                $"[green]Model pool:[/] {string.Join(", ", selectedModels.Select(m => m.DisplayName))}\n" +
+                $"[green]Workflows:[/] {workflowSummary}")
+                .Header("[green]✓ Multi-Model Collaboration Configured[/]")
+                .BorderColor(Color.Green));
+        }
+    }
 }
 
-AnsiConsole.MarkupLine($"[green]Provider:[/] {provider}");
+// Single model path: select provider first
+if (!useMultiModelCollaboration)
+{
+    if (providerFromArgs.HasValue)
+    {
+        provider = providerFromArgs.Value;
+    }
+    else if (savedProvider.HasValue)
+    {
+        provider = savedProvider.Value;
+        AnsiConsole.MarkupLine($"[dim]Using saved provider from .ralph.json[/]");
+    }
+    else if (!noTui)
+    {
+        AnsiConsole.MarkupLine("[dim]Detecting installed providers...[/]");
+        var installedProviders = GetInstalledProviders();
 
-// For Claude, handle model selection
-string? claudeModel = null;
-if (provider == AIProvider.Claude)
+        if (installedProviders.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[red]No AI providers found![/]");
+            AnsiConsole.MarkupLine("[dim]Install one of: claude, codex, copilot, gemini, or opencode CLI tools.[/]");
+            AnsiConsole.MarkupLine("[dim]Or use Ollama/LMStudio which is always available via HTTP API.[/]");
+            installedProviders.Add(AIProvider.Ollama);
+        }
+
+        provider = AnsiConsole.Prompt(
+            new SelectionPrompt<AIProvider>()
+                .Title("[yellow]Select AI provider:[/]")
+                .AddChoices(installedProviders));
+        providerWasSelected = true;
+    }
+
+    AnsiConsole.MarkupLine($"[green]Provider:[/] {provider}");
+}
+
+// Single model selection (only if not using multi-model collaboration)
+if (!useMultiModelCollaboration && provider == AIProvider.Claude)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
     {
@@ -1090,8 +1469,7 @@ if (provider == AIProvider.Claude)
 }
 
 // For Codex, handle model selection
-string? codexModel = null;
-if (provider == AIProvider.Codex)
+if (!useMultiModelCollaboration && provider == AIProvider.Codex)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
     {
@@ -1131,8 +1509,7 @@ if (provider == AIProvider.Codex)
 }
 
 // For Gemini, handle model selection
-string? geminiModel = null;
-if (provider == AIProvider.Gemini)
+if (!useMultiModelCollaboration && provider == AIProvider.Gemini)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
     {
@@ -1172,8 +1549,7 @@ if (provider == AIProvider.Gemini)
 }
 
 // For Cursor, handle model selection
-string? cursorModel = null;
-if (provider == AIProvider.Cursor)
+if (!useMultiModelCollaboration && provider == AIProvider.Cursor)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
     {
@@ -1213,8 +1589,7 @@ if (provider == AIProvider.Cursor)
 }
 
 // For Copilot, handle model selection
-string? copilotModel = null;
-if (provider == AIProvider.Copilot)
+if (!useMultiModelCollaboration && provider == AIProvider.Copilot)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
     {
@@ -1252,8 +1627,7 @@ if (provider == AIProvider.Copilot)
 }
 
 // For OpenCode, handle model selection
-string? openCodeModel = null;
-if (provider == AIProvider.OpenCode)
+if (!useMultiModelCollaboration && provider == AIProvider.OpenCode)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
     {
@@ -1302,9 +1676,7 @@ if (provider == AIProvider.OpenCode)
 }
 
 // For Ollama/LMStudio, handle URL and model selection
-string? ollamaUrl = null;
-string? ollamaModel = null;
-if (provider == AIProvider.Ollama)
+if (!useMultiModelCollaboration && provider == AIProvider.Ollama)
 {
     // Handle URL: command line > project settings > global cache > prompt
     if (!string.IsNullOrEmpty(apiUrlFromArgs))
@@ -1425,140 +1797,8 @@ if (provider == AIProvider.Ollama)
     AnsiConsole.MarkupLine($"[green]Model:[/] {ollamaModel}");
 }
 
-// Ask about multi-model configuration (only if never configured, or --fresh mode)
-MultiModelConfig? multiModelConfig = null;
-if (!noTui && (freshMode || projectSettings.MultiModel == null))
-{
-    bool multiModelConfigured = false;
-    while (!multiModelConfigured)
-    {
-        var multiModelChoice = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("\n[yellow]Multi-model configuration:[/]")
-                .AddChoices(
-                    "Single model (default)",
-                    "Verification model - use a second model to verify completion",
-                    "Round-robin rotation - alternate between models each iteration"));
-
-        if (multiModelChoice == "Single model (default)")
-        {
-            // Save explicit "single model" choice so we don't ask again
-            projectSettings.MultiModel = new MultiModelConfig { Strategy = ModelSwitchStrategy.None };
-            multiModelConfigured = true;
-        }
-        else
-        {
-            var strategy = multiModelChoice.StartsWith("Verification")
-                ? ModelSwitchStrategy.Verification
-                : ModelSwitchStrategy.RoundRobin;
-
-            // Create primary model spec from current selection
-            var primaryModelName = provider switch
-            {
-                AIProvider.Claude => claudeModel ?? "sonnet",
-                AIProvider.Codex => codexModel ?? "o3",
-                AIProvider.Copilot => copilotModel ?? "gpt-5",
-                AIProvider.Gemini => geminiModel ?? "gemini-2.5-pro",
-                AIProvider.Cursor => cursorModel ?? "claude-sonnet",
-                AIProvider.OpenCode => openCodeModel ?? "",
-                AIProvider.Ollama => ollamaModel ?? "llama3.1:8b",
-                _ => ""
-            };
-
-            var primaryModel = new ModelSpec
-            {
-                Provider = provider,
-                Model = primaryModelName,
-                BaseUrl = provider == AIProvider.Ollama ? ollamaUrl : null,
-                Label = !string.IsNullOrEmpty(primaryModelName) ? primaryModelName : provider.ToString()
-            };
-
-            var modelList = new List<ModelSpec> { primaryModel };
-
-            var cancelled = false;
-            if (strategy == ModelSwitchStrategy.Verification)
-            {
-                // For verification, only need one verifier model
-                AnsiConsole.MarkupLine("\n[yellow]Select verifier model:[/]");
-                var verifierModel = await PromptForModelSpec("Verifier", ollamaUrl);
-                if (verifierModel != null)
-                {
-                    modelList.Add(verifierModel);
-                    multiModelConfigured = true;
-                }
-                else
-                {
-                    // User went back - loop back to multi-model choice
-                    AnsiConsole.MarkupLine("[dim]Going back to multi-model selection...[/]");
-                }
-            }
-            else
-            {
-                // For round-robin, allow adding multiple models
-                var modelIndex = 2;
-                var addMore = true;
-
-                while (addMore)
-                {
-                    AnsiConsole.MarkupLine($"\n[yellow]Add model #{modelIndex} for rotation:[/]");
-                    var nextModel = await PromptForModelSpec($"Model {modelIndex}", ollamaUrl);
-                    if (nextModel != null)
-                    {
-                        modelList.Add(nextModel);
-                        modelIndex++;
-                    }
-                    else if (modelList.Count == 1)
-                    {
-                        // User went back on first additional model - loop back to multi-model choice
-                        cancelled = true;
-                        AnsiConsole.MarkupLine("[dim]Going back to multi-model selection...[/]");
-                        break;
-                    }
-                    // else: user went back but we have at least 2 models, just stop adding more
-
-                    if (!cancelled && modelList.Count > 1)
-                    {
-                        // Ask if they want to add another model
-                        addMore = AnsiConsole.Confirm("[yellow]Add another model to the rotation?[/]", false);
-                    }
-                    else if (cancelled)
-                    {
-                        break;
-                    }
-                }
-
-                if (!cancelled)
-                {
-                    multiModelConfigured = true;
-                }
-            }
-
-            if (multiModelConfigured)
-            {
-                multiModelConfig = new MultiModelConfig
-                {
-                    Strategy = strategy,
-                    Models = modelList,
-                    Verification = strategy == ModelSwitchStrategy.Verification
-                        ? new VerificationConfig { VerifierIndex = modelList.Count - 1, Trigger = VerificationTrigger.CompletionSignal }
-                        : null
-                };
-
-                projectSettings.MultiModel = multiModelConfig;
-
-                var modelNames = string.Join(" → ", modelList.Select(m => m.DisplayName));
-                AnsiConsole.MarkupLine($"[green]Multi-model:[/] {strategy} - {modelNames}");
-            }
-        }
-    }
-}
-else if (!freshMode && projectSettings.MultiModel?.IsEnabled == true)
-{
-    // Use saved multi-model config
-    multiModelConfig = projectSettings.MultiModel;
-    var modelNames = string.Join(" + ", multiModelConfig.Models.Select(m => m.DisplayName));
-    AnsiConsole.MarkupLine($"[dim]Using saved multi-model config: {multiModelConfig.Strategy} - {modelNames}[/]");
-}
+// Get multiModelConfig from projectSettings (set earlier in collaboration setup)
+MultiModelConfig? multiModelConfig = projectSettings.MultiModel;
 
 // Save provider to project settings if it changed or was newly selected
 if (providerWasSelected || (providerFromArgs.HasValue && providerFromArgs != savedProvider))
@@ -1588,7 +1828,8 @@ var config = new RalphConfig
     TargetDirectory = targetDir,
     Provider = provider,
     ProviderConfig = providerConfig,
-    MultiModel = multiModelConfig
+    MultiModel = multiModelConfig,
+    Collaboration = projectSettings.Collaboration
 };
 
 // Handle init mode - regenerate all project files from new spec

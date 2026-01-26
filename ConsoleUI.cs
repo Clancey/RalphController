@@ -16,7 +16,7 @@ public class ConsoleUI : IDisposable
     private readonly ConcurrentQueue<string> _outputLines = new();
     private readonly StringBuilder _streamBuffer = new();
     private readonly object _bufferLock = new();
-    private readonly int _maxOutputLines = 30;
+    private int _maxOutputLines = 30;
     private CancellationTokenSource? _uiCts;
     private Task? _inputTask;
     private bool _disposed;
@@ -70,6 +70,9 @@ public class ConsoleUI : IDisposable
         _lastConsoleWidth = Console.WindowWidth;
         _lastConsoleHeight = Console.WindowHeight;
 
+        // Calculate initial max output lines based on available space
+        UpdateMaxOutputLines();
+
         // Start input handler on background thread
         _inputTask = Task.Run(() => HandleInputAsync(_uiCts.Token), _uiCts.Token);
 
@@ -94,6 +97,9 @@ public class ConsoleUI : IDisposable
                         _lastConsoleWidth = Console.WindowWidth;
                         _lastConsoleHeight = Console.WindowHeight;
 
+                        // Recalculate max output lines based on available space
+                        UpdateMaxOutputLines();
+
                         // Clear and redraw on resize
                         AnsiConsole.Clear();
                     }
@@ -111,6 +117,31 @@ public class ConsoleUI : IDisposable
     public void Stop()
     {
         _uiCts?.Cancel();
+    }
+
+    /// <summary>
+    /// Calculate the maximum number of output lines based on available console height
+    /// </summary>
+    private void UpdateMaxOutputLines()
+    {
+        // Layout structure:
+        // - Header: Size(3) - includes border, ~1 line content
+        // - Main section: 
+        //   - Output: Ratio(4) - gets remaining space after Plan
+        //   - Plan: Size(6) - fixed at 6 lines including border
+        // - Footer: Size(3) - includes border, ~1 line content
+        //
+        // Calculation:
+        // Main section height = TotalHeight - Header(3) - Footer(3) = TotalHeight - 6
+        // Output panel height = MainHeight - Plan(6) = TotalHeight - 12
+        // Output content area = OutputHeight - border(2) = TotalHeight - 14
+        
+        var totalHeight = Console.WindowHeight;
+        var reservedSpace = 14; // Header(3) + Plan(6) + Footer(3) + Output border(2)
+        var availableForOutput = totalHeight - reservedSpace;
+        
+        // Ensure minimum of 10 lines and maximum reasonable limit
+        _maxOutputLines = Math.Max(10, Math.Min(availableForOutput, 200));
     }
 
     private Layout BuildLayout()

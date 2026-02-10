@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 using RalphController.Models;
+using RalphController.Parallel;
 using Spectre.Console;
 
 namespace RalphController;
@@ -10,7 +11,7 @@ namespace RalphController;
 /// </summary>
 public class ConsoleUI : IDisposable
 {
-    private readonly LoopController _controller;
+    private readonly LoopController? _controller;
     private readonly FileWatcher _fileWatcher;
     private readonly RalphConfig _config;
     private readonly ConcurrentQueue<string> _outputLines = new();
@@ -31,10 +32,20 @@ public class ConsoleUI : IDisposable
     private string _selectedProvider = "";
     private ModelSpec? _selectedModel;
 
+    // Teams mode fields
+    private readonly TeamController? _teamController;
+    private readonly ConcurrentDictionary<string, AgentStatistics> _agentStats = new();
+    private TaskQueueStatistics _queueStats = new() { Total = 0 };
+
     /// <summary>
     /// Whether to automatically start the loop when RunAsync is called
     /// </summary>
     public bool AutoStart { get; set; }
+
+    /// <summary>
+    /// Whether the UI is running in teams mode
+    /// </summary>
+    public bool IsTeamsMode => _teamController != null;
 
     public ConsoleUI(LoopController controller, FileWatcher fileWatcher, RalphConfig config)
     {
@@ -60,6 +71,18 @@ public class ConsoleUI : IDisposable
     }
 
     /// <summary>
+    /// Constructor for teams mode
+    /// </summary>
+    public ConsoleUI(TeamController teamController, FileWatcher fileWatcher, RalphConfig config)
+    {
+        _teamController = teamController;
+        _fileWatcher = fileWatcher;
+        _config = config;
+
+        WireTeamControllerEvents();
+    }
+
+    /// <summary>
     /// Start the UI and run until stopped
     /// </summary>
     public async Task RunAsync(CancellationToken cancellationToken = default)
@@ -76,39 +99,73 @@ public class ConsoleUI : IDisposable
         // Start input handler on background thread
         _inputTask = Task.Run(() => HandleInputAsync(_uiCts.Token), _uiCts.Token);
 
-        // Auto-start the loop if enabled
-        if (AutoStart && _controller.State == LoopState.Idle)
+        if (IsTeamsMode)
         {
-            _ = _controller.StartAsync();
-            AddOutputLine("[green]>>> Auto-starting loop...[/]");
-        }
-
-        // Run the live display
-        await AnsiConsole.Live(BuildLayout())
-            .AutoClear(false)
-            .Overflow(VerticalOverflow.Ellipsis)
-            .StartAsync(async ctx =>
+            // Auto-start the team controller
+            if (AutoStart && _teamController!.State == TeamControllerState.Idle)
             {
-                while (!_uiCts.Token.IsCancellationRequested)
+                _ = _teamController.StartAsync();
+                AddOutputLine("[green]>>> Auto-starting teams...[/]");
+            }
+
+            // Run the live display with teams layout
+            await AnsiConsole.Live(BuildTeamsLayout())
+                .AutoClear(false)
+                .Overflow(VerticalOverflow.Ellipsis)
+                .StartAsync(async ctx =>
                 {
-                    // Check for console resize
-                    if (Console.WindowWidth != _lastConsoleWidth || Console.WindowHeight != _lastConsoleHeight)
+                    while (!_uiCts.Token.IsCancellationRequested)
                     {
-                        _lastConsoleWidth = Console.WindowWidth;
-                        _lastConsoleHeight = Console.WindowHeight;
+                        if (Console.WindowWidth != _lastConsoleWidth || Console.WindowHeight != _lastConsoleHeight)
+                        {
+                            _lastConsoleWidth = Console.WindowWidth;
+                            _lastConsoleHeight = Console.WindowHeight;
+                            UpdateMaxOutputLines();
+                            AnsiConsole.Clear();
+                        }
 
-                        // Recalculate max output lines based on available space
-                        UpdateMaxOutputLines();
-
-                        // Clear and redraw on resize
-                        AnsiConsole.Clear();
+                        ctx.UpdateTarget(BuildTeamsLayout());
+                        ctx.Refresh();
+                        await Task.Delay(100, _uiCts.Token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
                     }
+                });
+        }
+        else
+        {
+            // Auto-start the loop if enabled
+            if (AutoStart && _controller!.State == LoopState.Idle)
+            {
+                _ = _controller.StartAsync();
+                AddOutputLine("[green]>>> Auto-starting loop...[/]");
+            }
 
-                    ctx.UpdateTarget(BuildLayout());
-                    ctx.Refresh();
-                    await Task.Delay(100, _uiCts.Token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-                }
-            });
+            // Run the live display
+            await AnsiConsole.Live(BuildLayout())
+                .AutoClear(false)
+                .Overflow(VerticalOverflow.Ellipsis)
+                .StartAsync(async ctx =>
+                {
+                    while (!_uiCts.Token.IsCancellationRequested)
+                    {
+                        // Check for console resize
+                        if (Console.WindowWidth != _lastConsoleWidth || Console.WindowHeight != _lastConsoleHeight)
+                        {
+                            _lastConsoleWidth = Console.WindowWidth;
+                            _lastConsoleHeight = Console.WindowHeight;
+
+                            // Recalculate max output lines based on available space
+                            UpdateMaxOutputLines();
+
+                            // Clear and redraw on resize
+                            AnsiConsole.Clear();
+                        }
+
+                        ctx.UpdateTarget(BuildLayout());
+                        ctx.Refresh();
+                        await Task.Delay(100, _uiCts.Token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                    }
+                });
+        }
     }
 
     /// <summary>
@@ -258,7 +315,7 @@ public class ConsoleUI : IDisposable
 
     private string BuildModelConfirmationContent()
     {
-        var currentModel = _controller.ModelSelector.GetCurrentModel();
+        var currentModel = _controller!.ModelSelector.GetCurrentModel();
         var modelName = currentModel?.DisplayName ?? _config.Provider.ToString();
         var safePrompt = string.IsNullOrEmpty(_originalPrompt) ? "(empty)" : _originalPrompt;
         var promptPreview = safePrompt.Length > 60
@@ -269,7 +326,7 @@ public class ConsoleUI : IDisposable
 
     private Panel BuildHeaderPanel()
     {
-        var state = _controller.State;
+        var state = _controller!.State;
         var stats = _controller.Statistics;
         var provider = _config.Provider;
 
@@ -364,7 +421,7 @@ public class ConsoleUI : IDisposable
     private Panel BuildFooterPanel()
     {
         // Double brackets to escape them in Spectre.Console markup
-        var controls = _controller.State switch
+        var controls = _controller!.State switch
         {
             LoopState.Running => "[[P]]ause  [[N]]ext  [[S]]top  [[F]]orce Stop  [[I]]nject  [[Q]]uit",
             LoopState.Paused => "[[R]]esume  [[S]]top  [[I]]nject  [[Q]]uit",
@@ -393,18 +450,25 @@ public class ConsoleUI : IDisposable
 
     private async Task HandleKeyAsync(ConsoleKeyInfo key)
     {
-        // Handle inject mode input
+        // Handle inject mode input (single-agent only)
         if (_isInInjectMode)
         {
             await HandleInjectInput(key);
             return;
         }
 
-        // Normal mode handling
+        // Dispatch to teams key handler if in teams mode
+        if (IsTeamsMode)
+        {
+            await HandleTeamsKeyAsync(key);
+            return;
+        }
+
+        // Normal mode handling (single-agent only)
         switch (char.ToLower(key.KeyChar))
         {
             case 'p':
-                if (_controller.State == LoopState.Running)
+                if (_controller!.State == LoopState.Running)
                 {
                     _controller.Pause();
                     AddOutputLine("[yellow]>>> Loop paused[/]");
@@ -412,7 +476,7 @@ public class ConsoleUI : IDisposable
                 break;
 
             case 'r':
-                if (_controller.State == LoopState.Paused)
+                if (_controller!.State == LoopState.Paused)
                 {
                     _controller.Resume();
                     AddOutputLine("[green]>>> Loop resumed[/]");
@@ -420,7 +484,7 @@ public class ConsoleUI : IDisposable
                 break;
 
             case 'n':
-                if (_controller.State == LoopState.Running)
+                if (_controller!.State == LoopState.Running)
                 {
                     _controller.SkipIteration();
                     AddOutputLine("[yellow]>>> Skipping to next iteration...[/]");
@@ -428,7 +492,7 @@ public class ConsoleUI : IDisposable
                 break;
 
             case 's':
-                if (_controller.State == LoopState.Running || _controller.State == LoopState.Paused)
+                if (_controller!.State == LoopState.Running || _controller.State == LoopState.Paused)
                 {
                     _controller.Stop();
                     AddOutputLine("[red]>>> Stopping after current iteration...[/]");
@@ -436,7 +500,7 @@ public class ConsoleUI : IDisposable
                 break;
 
             case 'f':
-                if (_controller.State != LoopState.Idle)
+                if (_controller!.State != LoopState.Idle)
                 {
                     await _controller.ForceStopAsync();
                     AddOutputLine("[red]>>> Force stopped![/]");
@@ -453,7 +517,7 @@ public class ConsoleUI : IDisposable
 
             case '\r':
             case '\n':
-                if (_controller.State == LoopState.Idle)
+                if (_controller!.State == LoopState.Idle)
                 {
                     // Start loop in background
                     _ = _controller.StartAsync();
@@ -532,7 +596,7 @@ public class ConsoleUI : IDisposable
             else if (c == 'n')
             {
                 // Use current model
-                _controller.InjectPrompt(_originalPrompt);
+                _controller!.InjectPrompt(_originalPrompt);
                 AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(_originalPrompt.Length > 50 ? _originalPrompt[..50] + "..." : _originalPrompt)}[/]");
                 EndInjectMode();
             }
@@ -655,7 +719,7 @@ public class ConsoleUI : IDisposable
                         Model = modelName,
                         Label = modelName
                     };
-                    _controller.InjectPrompt(_originalPrompt, _selectedModel);
+                    _controller!.InjectPrompt(_originalPrompt, _selectedModel);
                     AddOutputLine($"[yellow]>>> Injected with model: {Markup.Escape($"{_selectedProvider}/{modelName}")}[/]");
                     AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(_originalPrompt.Length > 50 ? _originalPrompt[..50] + "..." : _originalPrompt)}[/]");
                     EndInjectMode();
@@ -672,7 +736,7 @@ public class ConsoleUI : IDisposable
                         Model = _injectInput,
                         Label = _injectInput
                     };
-                    _controller.InjectPrompt(_originalPrompt, _selectedModel);
+                    _controller!.InjectPrompt(_originalPrompt, _selectedModel);
                     AddOutputLine($"[yellow]>>> Injected with model: {Markup.Escape($"{_selectedProvider}/{_injectInput}")}[/]");
                     AddOutputLine($"[yellow]>>> Prompt: {Markup.Escape(_originalPrompt.Length > 50 ? _originalPrompt[..50] + "..." : _originalPrompt)}[/]");
                     EndInjectMode();
@@ -936,6 +1000,296 @@ public class ConsoleUI : IDisposable
         }
 
         return line[..truncateAt];
+    }
+
+    // ───────────────────────────────────────────────────────────
+    // Teams mode methods
+    // ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Wire TeamController events to the output lines and internal state
+    /// </summary>
+    private void WireTeamControllerEvents()
+    {
+        if (_teamController == null) return;
+
+        _teamController.OnOutput += msg =>
+            AddOutputLine($"[green]>>>[/] {Markup.Escape(msg)}");
+
+        _teamController.OnError += msg =>
+            AddOutputLine($"[red]ERR:[/] {Markup.Escape(msg)}");
+
+        _teamController.OnPhaseChanged += phase =>
+            AddOutputLine($"[blue]--- Phase: {phase} ---[/]");
+
+        _teamController.OnAgentUpdate += stats =>
+            _agentStats[stats.AgentId] = stats;
+
+        _teamController.OnQueueUpdate += stats =>
+            _queueStats = stats;
+
+        _teamController.OnStateChanged += state =>
+            AddOutputLine($"[yellow]State: {state}[/]");
+
+        _teamController.OnVerificationComplete += result =>
+        {
+            var status = result.AllTasksComplete ? "[green]PASSED[/]" : "[red]ISSUES FOUND[/]";
+            AddOutputLine($"[blue]Verification: {status}[/]");
+            if (!string.IsNullOrEmpty(result.Summary))
+                AddOutputLine($"[dim]{Markup.Escape(result.Summary)}[/]");
+        };
+    }
+
+    /// <summary>
+    /// Build the teams mode layout
+    /// </summary>
+    private Layout BuildTeamsLayout()
+    {
+        var layout = new Layout("Root")
+            .SplitRows(
+                new Layout("Header").Size(3),
+                new Layout("Main").SplitColumns(
+                    new Layout("Output").Ratio(3),
+                    new Layout("Agents").Ratio(2)
+                ),
+                new Layout("Queue").Size(5),
+                new Layout("Footer").Size(3)
+            );
+
+        layout["Header"].Update(BuildTeamsHeaderPanel());
+        layout["Output"].Update(BuildOutputPanel()); // Reuse existing output panel
+        layout["Agents"].Update(BuildAgentsPanel());
+        layout["Queue"].Update(BuildQueuePanel());
+        layout["Footer"].Update(BuildTeamsFooterPanel());
+
+        return layout;
+    }
+
+    /// <summary>
+    /// Build the teams header panel showing title, phase, and state
+    /// </summary>
+    private Panel BuildTeamsHeaderPanel()
+    {
+        var state = _teamController!.State;
+        var phase = _teamController.CurrentPhase;
+        var agentCount = _agentStats.Count;
+
+        var stateColor = state switch
+        {
+            TeamControllerState.Running => "green",
+            TeamControllerState.Initializing => "yellow",
+            TeamControllerState.Stopping => "red",
+            TeamControllerState.Failed => "red",
+            TeamControllerState.Stopped => "grey",
+            _ => "grey"
+        };
+
+        var phaseDisplay = phase switch
+        {
+            TeamPhase.Decomposing => "[yellow]DECOMPOSING[/]",
+            TeamPhase.Executing => "[green]EXECUTING[/]",
+            TeamPhase.Verifying => "[cyan]VERIFYING[/]",
+            TeamPhase.Complete => "[green]COMPLETE[/]",
+            _ => "[dim]IDLE[/]"
+        };
+
+        var table = new Table()
+            .Border(TableBorder.None)
+            .HideHeaders()
+            .AddColumn("")
+            .AddColumn("")
+            .AddColumn("")
+            .AddColumn("");
+
+        table.AddRow(
+            $"[bold blue]RALPH TEAMS[/]",
+            $"[{stateColor}][[{state.ToString().ToUpper()}]][/]",
+            phaseDisplay,
+            $"[dim]{agentCount} agent{(agentCount != 1 ? "s" : "")}[/]"
+        );
+
+        table.AddRow(
+            $"[dim]{Markup.Escape(_config.TargetDirectory)}[/]",
+            "",
+            "",
+            ""
+        );
+
+        return new Panel(table)
+            .Border(BoxBorder.Rounded)
+            .BorderColor(Color.Blue);
+    }
+
+    /// <summary>
+    /// Build the agents panel showing each agent's status
+    /// </summary>
+    private Panel BuildAgentsPanel()
+    {
+        var agents = _agentStats.Values.ToArray();
+
+        if (agents.Length == 0)
+        {
+            return new Panel(new Markup("[dim]No agents running...[/]"))
+                .Header("[bold]Agents[/]")
+                .Border(BoxBorder.Rounded)
+                .Expand();
+        }
+
+        var table = new Table()
+            .Border(TableBorder.Simple)
+            .AddColumn("Agent")
+            .AddColumn("State")
+            .AddColumn("Task")
+            .AddColumn("Done/Fail");
+
+        foreach (var agent in agents.OrderBy(a => a.Name))
+        {
+            var stateColor = agent.State switch
+            {
+                ParallelAgentState.Running => "green",
+                ParallelAgentState.Initializing => "yellow",
+                ParallelAgentState.Waiting => "cyan",
+                ParallelAgentState.Merging => "magenta",
+                ParallelAgentState.Failed => "red",
+                ParallelAgentState.Stopped => "grey",
+                _ => "dim"
+            };
+
+            var nameDisplay = agent.Name;
+            if (agent.AssignedModel != null)
+                nameDisplay += $"\n[dim]{Markup.Escape(agent.AssignedModel.DisplayName)}[/]";
+
+            var taskDisplay = agent.CurrentTask != null
+                ? Markup.Escape(TruncateString(agent.CurrentTask.Title ?? agent.CurrentTask.Description, 30))
+                : "[dim]---[/]";
+
+            var countsDisplay = agent.TasksFailed > 0
+                ? $"[green]{agent.TasksCompleted}[/]/[red]{agent.TasksFailed}[/]"
+                : $"[green]{agent.TasksCompleted}[/]/0";
+
+            table.AddRow(
+                new Markup(nameDisplay),
+                new Markup($"[{stateColor}]{agent.State}[/]"),
+                new Markup(taskDisplay),
+                new Markup(countsDisplay)
+            );
+        }
+
+        return new Panel(table)
+            .Header("[bold]Agents[/]")
+            .Border(BoxBorder.Rounded)
+            .Expand();
+    }
+
+    /// <summary>
+    /// Build the task queue panel with progress bar and counts
+    /// </summary>
+    private Panel BuildQueuePanel()
+    {
+        var stats = _queueStats;
+
+        if (stats.Total == 0)
+        {
+            return new Panel(new Markup("[dim]No tasks queued[/]"))
+                .Header("[bold]Task Queue[/]")
+                .Border(BoxBorder.Rounded)
+                .Expand();
+        }
+
+        var percent = stats.CompletionPercent;
+        var barWidth = Math.Max(10, Console.WindowWidth - 20);
+        var filledWidth = (int)(barWidth * percent / 100.0);
+        var emptyWidth = barWidth - filledWidth;
+
+        var barColor = percent >= 100 ? "green" : percent >= 50 ? "yellow" : "blue";
+        var progressBar = $"[{barColor}]{new string('#', filledWidth)}[/][dim]{new string('-', emptyWidth)}[/]";
+
+        var countsLine = $"[dim]Pending:[/] {stats.Pending}  " +
+                         $"[cyan]Claimed:[/] {stats.Claimed}  " +
+                         $"[yellow]InProgress:[/] {stats.InProgress}  " +
+                         $"[green]Completed:[/] {stats.Completed}  " +
+                         $"[red]Failed:[/] {stats.Failed}  " +
+                         $"[bold]{percent:F0}%[/]";
+
+        var content = $"{progressBar}\n{countsLine}";
+
+        return new Panel(new Markup(content))
+            .Header($"[bold]Task Queue ({stats.Completed}/{stats.Total})[/]")
+            .Border(BoxBorder.Rounded)
+            .Expand();
+    }
+
+    /// <summary>
+    /// Build the teams footer panel with key controls
+    /// </summary>
+    private Panel BuildTeamsFooterPanel()
+    {
+        var state = _teamController!.State;
+
+        var controls = state switch
+        {
+            TeamControllerState.Running or TeamControllerState.Initializing =>
+                "[[S]]top  [[Q]]uit",
+            TeamControllerState.Stopped or TeamControllerState.Failed =>
+                "[[Q]]uit",
+            _ => "[[Q]]uit"
+        };
+
+        // Show phase-specific hint if running
+        if (state == TeamControllerState.Running)
+        {
+            var phaseHint = _teamController.CurrentPhase switch
+            {
+                TeamPhase.Decomposing => "[dim]Decomposing tasks...[/]  ",
+                TeamPhase.Executing => "[dim]Agents working...[/]  ",
+                TeamPhase.Verifying => "[dim]Verifying results...[/]  ",
+                TeamPhase.Complete => "[dim]Complete[/]  ",
+                _ => ""
+            };
+            controls = phaseHint + controls;
+        }
+
+        return new Panel(new Markup($"[bold]{controls}[/]"))
+            .Border(BoxBorder.Rounded)
+            .BorderColor(Color.Grey);
+    }
+
+    /// <summary>
+    /// Handle key presses in teams mode
+    /// </summary>
+    private async Task HandleTeamsKeyAsync(ConsoleKeyInfo key)
+    {
+        switch (char.ToLower(key.KeyChar))
+        {
+            case 's':
+                if (_teamController!.State == TeamControllerState.Running ||
+                    _teamController.State == TeamControllerState.Initializing)
+                {
+                    _teamController.Stop();
+                    AddOutputLine("[red]>>> Stopping teams...[/]");
+                }
+                break;
+
+            case 'q':
+                if (_teamController!.State == TeamControllerState.Running ||
+                    _teamController.State == TeamControllerState.Initializing)
+                {
+                    _teamController.Stop();
+                }
+                Stop();
+                break;
+        }
+
+        await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Truncate a string to a maximum length
+    /// </summary>
+    private static string TruncateString(string value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        return value.Length <= maxLength ? value : value[..maxLength] + "...";
     }
 
     public void Dispose()

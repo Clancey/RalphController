@@ -523,8 +523,8 @@ public class ProjectScaffolder
 
             // Determine the full path
             var fullPath = fileName.Contains('/')
-                ? Path.Combine(_config.TargetDirectory, fileName.TrimStart('/'))
-                : Path.Combine(_config.TargetDirectory, fileName);
+                ? Path.Combine(_config.ProjectFilesDirectory, fileName.TrimStart('/'))
+                : Path.Combine(_config.ProjectFilesDirectory, fileName);
 
             // Create directory if needed
             var dir = Path.GetDirectoryName(fullPath);

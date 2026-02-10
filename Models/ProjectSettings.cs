@@ -41,8 +41,14 @@ public class ProjectSettings
     /// <summary>Custom executable path for the provider (optional)</summary>
     public string? ExecutablePath { get; set; }
 
+    /// <summary>Optional folder for Ralph project files (relative or absolute path)</summary>
+    public string? RalphFolder { get; set; }
+
     /// <summary>Multi-model configuration (rotation, verification)</summary>
     public MultiModelConfig? MultiModel { get; set; }
+
+    /// <summary>Teams mode configuration</summary>
+    public TeamConfig? Teams { get; set; }
 
     /// <summary>When these settings were last updated</summary>
     public DateTime? LastUpdated { get; set; }

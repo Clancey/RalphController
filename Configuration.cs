@@ -19,6 +19,9 @@ public record RalphConfig
     /// <summary>Multi-model configuration (rotation, verification)</summary>
     public MultiModelConfig? MultiModel { get; init; }
 
+    /// <summary>Teams mode configuration</summary>
+    public TeamConfig? Teams { get; init; }
+
     /// <summary>Path to AI CLI executable (overrides provider default)</summary>
     public string? ExecutablePath { get; init; }
 
@@ -33,6 +36,17 @@ public record RalphConfig
 
     /// <summary>Name of the specs directory</summary>
     public string SpecsDirectory { get; init; } = "specs";
+
+    /// <summary>Optional folder for Ralph project files (relative to TargetDirectory, or absolute path)</summary>
+    public string? RalphFolder { get; init; }
+
+    /// <summary>Directory where project files (prompt.md, plan, agents, specs) are stored</summary>
+    public string ProjectFilesDirectory => RalphFolder switch
+    {
+        null or "" => TargetDirectory,
+        _ when Path.IsPathRooted(RalphFolder) => RalphFolder,
+        _ => Path.Combine(TargetDirectory, RalphFolder)
+    };
 
     /// <summary>Optional maximum number of iterations (null = unlimited)</summary>
     public int? MaxIterations { get; init; }
@@ -62,16 +76,16 @@ public record RalphConfig
     public int IterationTimeoutMinutes { get; init; } = 30;
 
     /// <summary>Full path to prompt file</summary>
-    public string PromptFilePath => Path.Combine(TargetDirectory, PromptFile);
+    public string PromptFilePath => Path.Combine(ProjectFilesDirectory, PromptFile);
 
     /// <summary>Full path to plan file</summary>
-    public string PlanFilePath => Path.Combine(TargetDirectory, PlanFile);
+    public string PlanFilePath => Path.Combine(ProjectFilesDirectory, PlanFile);
 
     /// <summary>Full path to agents file</summary>
-    public string AgentsFilePath => Path.Combine(TargetDirectory, AgentsFile);
+    public string AgentsFilePath => Path.Combine(ProjectFilesDirectory, AgentsFile);
 
     /// <summary>Full path to specs directory</summary>
-    public string SpecsDirectoryPath => Path.Combine(TargetDirectory, SpecsDirectory);
+    public string SpecsDirectoryPath => Path.Combine(ProjectFilesDirectory, SpecsDirectory);
 }
 
 /// <summary>

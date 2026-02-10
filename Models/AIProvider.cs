@@ -51,6 +51,18 @@ public record AIProviderConfig
     /// <summary>Whether output is in stream-json format that needs parsing</summary>
     public bool UsesStreamJson { get; init; } = false;
 
+    /// <summary>Whether this provider has been configured to support sub-agents</summary>
+    public bool SupportsSubAgents { get; init; } = false;
+
+    /// <summary>Check if this provider supports sub-agent coordination</summary>
+    public bool HasSubAgentCapability() => SupportsSubAgents || Provider switch
+    {
+        AIProvider.Claude => true,   // Claude has native tool/sub-agent support
+        AIProvider.Cursor => true,   // Cursor uses Claude APIs with sub-agent support
+        AIProvider.Ollama => false,  // Depends on model, conservative default
+        _ => false
+    };
+
     public static AIProviderConfig ForClaude(string? executablePath = null, string? model = null) => new()
     {
         Provider = AIProvider.Claude,

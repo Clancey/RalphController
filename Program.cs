@@ -773,20 +773,23 @@ var initMode = false;
 
 string? modelFromArgs = null;
 string? apiUrlFromArgs = null;
+string? ralphFolderFromArgs = null;
 
 // Define valid arguments
 var validArgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
-    "--provider", "--model", "--api-url", "--url",
+    "--provider", "--model", "--api-url", "--url", "--ralph-folder",
     "--codex", "--copilot", "--claude", "--gemini", "--cursor", "--opencode", "--ollama", "--lmstudio",
     "--list-models", "--fresh", "--init", "--spec", "--no-tui", "--console",
-    "--test-streaming", "--single-run", "--test-aiprocess", "--test-output"
+    "--test-streaming", "--single-run", "--test-aiprocess", "--test-output",
+    "--teams"
 };
 
 // Check for flags
 var listModels = false;
 var freshMode = false;
 var noTui = false;
+var teamsMode = false;
 var unknownArgs = new List<string>();
 
 for (int i = 0; i < args.Length; i++)
@@ -826,6 +829,11 @@ for (int i = 0; i < args.Length; i++)
     else if ((args[i] == "--api-url" || args[i] == "--url") && i + 1 < args.Length)
     {
         apiUrlFromArgs = args[i + 1];
+        i++;
+    }
+    else if (args[i] == "--ralph-folder" && i + 1 < args.Length)
+    {
+        ralphFolderFromArgs = args[i + 1];
         i++;
     }
     else if (args[i] == "--codex")
@@ -884,6 +892,10 @@ for (int i = 0; i < args.Length; i++)
     {
         noTui = true;
     }
+    else if (args[i] == "--teams")
+    {
+        teamsMode = true;
+    }
 }
 
 // Check for unknown arguments
@@ -894,10 +906,12 @@ if (unknownArgs.Count > 0)
     AnsiConsole.MarkupLine("  [dim]--provider <name>[/]     Select AI provider (claude, codex, copilot, gemini, cursor, opencode, ollama)");
     AnsiConsole.MarkupLine("  [dim]--model <name>[/]        Select model for the provider");
     AnsiConsole.MarkupLine("  [dim]--api-url <url>[/]       API URL for Ollama/LMStudio");
+    AnsiConsole.MarkupLine("  [dim]--ralph-folder <path>[/] Store project files in a subfolder (e.g. .ralph)");
     AnsiConsole.MarkupLine("  [dim]--fresh[/]               Ignore saved settings, prompt for all options");
     AnsiConsole.MarkupLine("  [dim]--init [[spec]][/]       Initialize/regenerate project files from spec");
     AnsiConsole.MarkupLine("  [dim]--no-tui[/]              Run without TUI (plain console output)");
     AnsiConsole.MarkupLine("  [dim]--list-models[/]         List available models");
+    AnsiConsole.MarkupLine("  [dim]--teams[/]                Run in teams mode (parallel agents)");
     AnsiConsole.MarkupLine("\n[dim]Provider shortcuts: --claude, --codex, --copilot, --gemini, --cursor, --opencode, --ollama, --lmstudio[/]");
     return 1;
 }
@@ -1427,7 +1441,7 @@ if (provider == AIProvider.Ollama)
 
 // Ask about multi-model configuration (only if never configured, or --fresh mode)
 MultiModelConfig? multiModelConfig = null;
-if (!noTui && (freshMode || projectSettings.MultiModel == null))
+if (!noTui && !teamsMode && (freshMode || (projectSettings.MultiModel == null && projectSettings.Teams?.IsEnabled != true)))
 {
     bool multiModelConfigured = false;
     while (!multiModelConfigured)
@@ -1438,12 +1452,19 @@ if (!noTui && (freshMode || projectSettings.MultiModel == null))
                 .AddChoices(
                     "Single model (default)",
                     "Verification model - use a second model to verify completion",
-                    "Round-robin rotation - alternate between models each iteration"));
+                    "Round-robin rotation - alternate between models each iteration",
+                    "Teams mode - parallel agents working on subtasks"));
 
         if (multiModelChoice == "Single model (default)")
         {
             // Save explicit "single model" choice so we don't ask again
             projectSettings.MultiModel = new MultiModelConfig { Strategy = ModelSwitchStrategy.None };
+            multiModelConfigured = true;
+        }
+        else if (multiModelChoice.StartsWith("Teams mode"))
+        {
+            // Teams mode selected from multi-model config - set flag and break out
+            teamsMode = true;
             multiModelConfigured = true;
         }
         else
@@ -1560,6 +1581,232 @@ else if (!freshMode && projectSettings.MultiModel?.IsEnabled == true)
     AnsiConsole.MarkupLine($"[dim]Using saved multi-model config: {multiModelConfig.Strategy} - {modelNames}[/]");
 }
 
+// Teams mode configuration
+TeamConfig? teamConfig = null;
+if (teamsMode)
+{
+    // Teams mode from CLI flag - prompt for configuration
+    AnsiConsole.MarkupLine("\n[blue]Teams Mode Configuration[/]");
+
+    // Number of agents
+    var agentCount = AnsiConsole.Prompt(
+        new TextPrompt<int>("[yellow]Number of sub-agents (2-8):[/]")
+            .DefaultValue(3)
+            .Validate(n => n >= 2 && n <= 8 ? ValidationResult.Success() : ValidationResult.Error("Must be 2-8")));
+
+    // Lead agent model
+    AnsiConsole.MarkupLine("\n[yellow]Select lead agent model:[/]");
+    var leadModel = await PromptForModelSpec("Lead Agent", ollamaUrl);
+    if (leadModel == null)
+    {
+        // Use current provider as lead
+        var currentModelName = provider switch
+        {
+            AIProvider.Claude => claudeModel ?? "sonnet",
+            AIProvider.Codex => codexModel ?? "o3",
+            AIProvider.Copilot => copilotModel ?? "gpt-5",
+            AIProvider.Gemini => geminiModel ?? "gemini-2.5-pro",
+            AIProvider.Cursor => cursorModel ?? "claude-sonnet",
+            AIProvider.OpenCode => openCodeModel ?? "",
+            AIProvider.Ollama => ollamaModel ?? "llama3.1:8b",
+            _ => ""
+        };
+        leadModel = new ModelSpec
+        {
+            Provider = provider,
+            Model = currentModelName,
+            BaseUrl = provider == AIProvider.Ollama ? ollamaUrl : null,
+            Label = currentModelName
+        };
+    }
+
+    // Sub-agent model assignment
+    var assignmentChoice = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("[yellow]Sub-agent model assignment:[/]")
+            .AddChoices(
+                "Same as lead (default)",
+                "Pick for each agent",
+                "Round-robin from list"));
+
+    var modelAssignment = AgentModelAssignment.SameAsLead;
+    var agentModels = new List<ModelSpec>();
+
+    if (assignmentChoice.StartsWith("Pick"))
+    {
+        modelAssignment = AgentModelAssignment.PerAgent;
+        for (int i = 0; i < agentCount; i++)
+        {
+            AnsiConsole.MarkupLine($"\n[yellow]Select model for Agent {i + 1}:[/]");
+            var agentModel = await PromptForModelSpec($"Agent {i + 1}", ollamaUrl);
+            agentModels.Add(agentModel ?? leadModel);
+        }
+    }
+    else if (assignmentChoice.StartsWith("Round"))
+    {
+        modelAssignment = AgentModelAssignment.RoundRobin;
+        agentModels.Add(leadModel);
+        var addMore = true;
+        var modelIndex = 2;
+        while (addMore)
+        {
+            AnsiConsole.MarkupLine($"\n[yellow]Add model #{modelIndex} for rotation:[/]");
+            var nextModel = await PromptForModelSpec($"Model {modelIndex}", ollamaUrl);
+            if (nextModel != null)
+            {
+                agentModels.Add(nextModel);
+                modelIndex++;
+            }
+            if (agentModels.Count > 1)
+            {
+                addMore = AnsiConsole.Confirm("[yellow]Add another model?[/]", false);
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
+    // Decomposition strategy
+    var decompChoice = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("[yellow]Task decomposition strategy:[/]")
+            .AddChoices(
+                "AI decomposed (lead agent breaks down tasks)",
+                "From implementation_plan.md"));
+
+    var decomposition = decompChoice.StartsWith("AI")
+        ? DecompositionStrategy.AIDecomposed
+        : DecompositionStrategy.FromPlan;
+
+    // Merge strategy
+    var mergeChoice = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("[yellow]Merge strategy:[/]")
+            .AddChoices(
+                "Sequential (safest)",
+                "Rebase then merge",
+                "Direct merge"));
+
+    var mergeStrategy = mergeChoice switch
+    {
+        var s when s.StartsWith("Rebase") => MergeStrategy.RebaseThenMerge,
+        var s when s.StartsWith("Direct") => MergeStrategy.MergeDirect,
+        _ => MergeStrategy.Sequential
+    };
+
+    teamConfig = new TeamConfig
+    {
+        AgentCount = agentCount,
+        LeadModel = leadModel,
+        AgentModels = agentModels,
+        ModelAssignment = modelAssignment,
+        DecompositionStrategy = decomposition,
+        MergeStrategy = mergeStrategy,
+        UseWorktrees = true
+    };
+
+    projectSettings.Teams = teamConfig;
+
+    // Display summary
+    var teamModelNames = modelAssignment switch
+    {
+        AgentModelAssignment.SameAsLead => $"All: {leadModel.DisplayName}",
+        AgentModelAssignment.PerAgent => string.Join(", ", agentModels.Select(m => m.DisplayName)),
+        AgentModelAssignment.RoundRobin => string.Join(" → ", agentModels.Select(m => m.DisplayName)),
+        _ => leadModel.DisplayName
+    };
+    AnsiConsole.MarkupLine($"[green]Teams:[/] {agentCount} agents, Lead: {Markup.Escape(leadModel.DisplayName)}, Sub-agents: {Markup.Escape(teamModelNames)}");
+    AnsiConsole.MarkupLine($"[green]Strategy:[/] {decomposition}, Merge: {mergeStrategy}");
+}
+else if (!freshMode && projectSettings.Teams?.IsEnabled == true)
+{
+    // Use saved teams config
+    teamConfig = projectSettings.Teams;
+    teamsMode = true;
+    AnsiConsole.MarkupLine($"[dim]Using saved teams config: {teamConfig.AgentCount} agents[/]");
+}
+
+// Determine ralph folder: CLI arg > saved settings > prompt for new projects
+string? ralphFolder = null;
+if (!string.IsNullOrEmpty(ralphFolderFromArgs))
+{
+    ralphFolder = ralphFolderFromArgs;
+    projectSettings.RalphFolder = ralphFolder;
+}
+else if (!freshMode && !string.IsNullOrEmpty(projectSettings.RalphFolder))
+{
+    ralphFolder = projectSettings.RalphFolder;
+    AnsiConsole.MarkupLine($"[dim]Using saved ralph folder: {ralphFolder}[/]");
+}
+else if (!noTui && freshMode)
+{
+    // Only prompt during --fresh or new project setup (no existing project files in root)
+    var hasExistingFiles = File.Exists(Path.Combine(targetDir, "prompt.md"))
+        || File.Exists(Path.Combine(targetDir, "implementation_plan.md"))
+        || File.Exists(Path.Combine(targetDir, "agents.md"));
+
+    if (!hasExistingFiles)
+    {
+        var folderChoice = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("\n[yellow]Where should Ralph store project files?[/]")
+                .AddChoices(
+                    "Project root (default)",
+                    ".ralph/ folder",
+                    "Custom path..."));
+
+        ralphFolder = folderChoice switch
+        {
+            ".ralph/ folder" => ".ralph",
+            "Custom path..." => AnsiConsole.Prompt(
+                new TextPrompt<string>("[yellow]Enter folder path:[/]")
+                    .DefaultValue(".ralph")),
+            _ => null
+        };
+
+        if (!string.IsNullOrEmpty(ralphFolder))
+        {
+            projectSettings.RalphFolder = ralphFolder;
+        }
+    }
+}
+
+// Auto-create ralph folder if set
+if (!string.IsNullOrEmpty(ralphFolder))
+{
+    var resolvedFolder = Path.IsPathRooted(ralphFolder)
+        ? ralphFolder
+        : Path.Combine(targetDir, ralphFolder);
+
+    if (!Directory.Exists(resolvedFolder))
+    {
+        Directory.CreateDirectory(resolvedFolder);
+        AnsiConsole.MarkupLine($"[green]Created ralph folder:[/] {resolvedFolder}");
+    }
+
+    // Tip for gitignore with relative paths
+    if (!Path.IsPathRooted(ralphFolder))
+    {
+        var gitignorePath = Path.Combine(targetDir, ".gitignore");
+        if (File.Exists(gitignorePath))
+        {
+            var gitignoreContent = File.ReadAllText(gitignorePath);
+            if (!gitignoreContent.Contains(ralphFolder))
+            {
+                AnsiConsole.MarkupLine($"[dim]Tip: Add '{ralphFolder}/' to .gitignore to keep project files out of version control[/]");
+            }
+        }
+        else
+        {
+            AnsiConsole.MarkupLine($"[dim]Tip: Add '{ralphFolder}/' to .gitignore to keep project files out of version control[/]");
+        }
+    }
+
+    AnsiConsole.MarkupLine($"[green]Ralph folder:[/] {ralphFolder}");
+}
+
 // Save provider to project settings if it changed or was newly selected
 if (providerWasSelected || (providerFromArgs.HasValue && providerFromArgs != savedProvider))
 {
@@ -1588,7 +1835,9 @@ var config = new RalphConfig
     TargetDirectory = targetDir,
     Provider = provider,
     ProviderConfig = providerConfig,
-    MultiModel = multiModelConfig
+    MultiModel = multiModelConfig,
+    Teams = teamConfig,
+    RalphFolder = ralphFolder
 };
 
 // Handle init mode - regenerate all project files from new spec
@@ -1881,7 +2130,30 @@ if (noTui)
     return 0;
 }
 
-// Create components
+if (teamsMode && teamConfig != null)
+{
+    // Teams mode
+    using var teamFileWatcher = new FileWatcher(config);
+    using var teamController = new TeamController(config);
+    using var teamUi = new ConsoleUI(teamController, teamFileWatcher, config);
+
+    teamUi.AutoStart = true;
+    teamFileWatcher.Start();
+
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true;
+        teamUi.Stop();
+    };
+
+    AnsiConsole.Clear();
+    await teamUi.RunAsync();
+
+    AnsiConsole.MarkupLine("\n[yellow]Goodbye![/]");
+    return 0;
+}
+
+// Create components (single agent mode)
 using var fileWatcher = new FileWatcher(config);
 using var controller = new LoopController(config);
 using var ui = new ConsoleUI(controller, fileWatcher, config);

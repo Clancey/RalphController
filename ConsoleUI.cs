@@ -1155,7 +1155,7 @@ public class ConsoleUI : IDisposable
                 _ => "dim"
             };
 
-            var nameDisplay = agent.Name;
+            var nameDisplay = Markup.Escape(agent.Name);
             if (agent.AssignedModel != null)
                 nameDisplay += $"\n[dim]{Markup.Escape(agent.AssignedModel.DisplayName)}[/]";
 

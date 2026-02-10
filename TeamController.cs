@@ -323,7 +323,8 @@ public class TeamController : IDisposable
 
                 if (result.Success)
                 {
-                    OnOutput?.Invoke($"[{agent.Statistics.Name}] Merge successful: {result.MergeCommitSha?[..8]}");
+                    var shortSha = result.MergeCommitSha is { Length: >= 8 } sha ? sha[..8] : result.MergeCommitSha ?? "unknown";
+                    OnOutput?.Invoke($"[{agent.Statistics.Name}] Merge successful: {shortSha}");
                 }
                 else if (result.Conflicts?.Count > 0)
                 {

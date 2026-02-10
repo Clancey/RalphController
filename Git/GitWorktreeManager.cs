@@ -352,13 +352,18 @@ public class GitWorktreeManager : IDisposable
             return new GitCommandResult { ExitCode = -1, Output = "", Error = "Failed to start git" };
         }
 
+        // Read stdout/stderr concurrently BEFORE waiting for exit to avoid deadlock
+        // (process can block if pipe buffer fills while we wait for exit)
+        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+
         await process.WaitForExitAsync(cancellationToken);
 
         return new GitCommandResult
         {
             ExitCode = process.ExitCode,
-            Output = await process.StandardOutput.ReadToEndAsync(cancellationToken),
-            Error = await process.StandardError.ReadToEndAsync(cancellationToken)
+            Output = await outputTask,
+            Error = await errorTask
         };
     }
 
@@ -367,7 +372,8 @@ public class GitWorktreeManager : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        PruneAsync().GetAwaiter().GetResult();
+        try { PruneAsync().GetAwaiter().GetResult(); }
+        catch { /* Don't crash during dispose */ }
 
         GC.SuppressFinalize(this);
     }

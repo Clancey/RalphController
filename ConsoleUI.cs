@@ -104,7 +104,11 @@ public class ConsoleUI : IDisposable
             // Auto-start the team controller
             if (AutoStart && _teamController!.State == TeamControllerState.Idle)
             {
-                _ = _teamController.StartAsync();
+                _ = _teamController.StartAsync().ContinueWith(t =>
+                {
+                    if (t.Exception != null)
+                        AddOutputLine($"[red]ERR: Teams failed: {Markup.Escape(t.Exception.InnerException?.Message ?? t.Exception.Message)}[/]");
+                }, TaskContinuationOptions.OnlyOnFaulted);
                 AddOutputLine("[green]>>> Auto-starting teams...[/]");
             }
 

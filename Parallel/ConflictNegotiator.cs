@@ -204,10 +204,22 @@ public class ConflictNegotiator
     {
         try
         {
+            // For negotiation we need plain text output to parse resolution blocks.
+            var arguments = _providerConfig.Arguments;
+            if (_providerConfig.UsesStreamJson)
+            {
+                arguments = arguments
+                    .Replace("--output-format stream-json", "--output-format text")
+                    .Replace("--verbose", "")
+                    .Replace("--include-partial-messages", "");
+                // Collapse multiple spaces from removed flags
+                arguments = string.Join(' ', arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+            }
+
             var psi = new ProcessStartInfo
             {
                 FileName = _providerConfig.ExecutablePath,
-                Arguments = _providerConfig.Arguments,
+                Arguments = arguments,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -223,15 +235,16 @@ public class ConflictNegotiator
             await process.StandardInput.WriteAsync(prompt);
             process.StandardInput.Close();
 
-            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var error = await process.StandardError.ReadToEndAsync(cancellationToken);
+            // Read stdout/stderr concurrently before WaitForExit to avoid deadlock
+            var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
 
             return new NegotiatorProcessResult
             {
                 Success = process.ExitCode == 0,
-                Output = output,
-                Error = error
+                Output = await outputTask,
+                Error = await errorTask
             };
         }
         catch (Exception ex)

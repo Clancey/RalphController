@@ -189,6 +189,19 @@ public class TeamController : IDisposable
         var prompt = BuildDecompositionPrompt();
         var providerConfig = _teamConfig.LeadModel?.ToProviderConfig() ?? _config.ProviderConfig;
 
+        // For decomposition we need plain text output to parse structured task blocks.
+        // Override stream-json to text output since we're doing batch parsing, not streaming.
+        var arguments = providerConfig.Arguments;
+        if (providerConfig.UsesStreamJson)
+        {
+            arguments = arguments
+                .Replace("--output-format stream-json", "--output-format text")
+                .Replace("--verbose", "")
+                .Replace("--include-partial-messages", "");
+            // Collapse multiple spaces from removed flags
+            arguments = string.Join(' ', arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName = providerConfig.ExecutablePath,
@@ -202,11 +215,11 @@ public class TeamController : IDisposable
         if (providerConfig.UsesPromptArgument)
         {
             var escapedPrompt = prompt.Replace("\"", "\\\"");
-            psi.Arguments = $"{providerConfig.Arguments} \"{escapedPrompt}\"";
+            psi.Arguments = $"{arguments} \"{escapedPrompt}\"";
         }
         else
         {
-            psi.Arguments = providerConfig.Arguments;
+            psi.Arguments = arguments;
         }
 
         using var process = Process.Start(psi);
@@ -222,9 +235,13 @@ public class TeamController : IDisposable
             process.StandardInput.Close();
         }
 
-        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var error = await process.StandardError.ReadToEndAsync(cancellationToken);
+        // Read stdout/stderr concurrently before WaitForExit to avoid deadlock
+        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
+
+        var output = await outputTask;
+        var error = await errorTask;
 
         if (process.ExitCode != 0)
         {

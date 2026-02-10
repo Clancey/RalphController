@@ -1583,7 +1583,13 @@ else if (!freshMode && projectSettings.MultiModel?.IsEnabled == true)
 
 // Teams mode configuration
 TeamConfig? teamConfig = null;
-if (teamsMode)
+if (teamsMode && !freshMode && projectSettings.Teams?.IsEnabled == true)
+{
+    // --teams passed but saved config exists — use it
+    teamConfig = projectSettings.Teams;
+    AnsiConsole.MarkupLine($"[dim]Using saved teams config: {teamConfig.AgentCount} agents[/]");
+}
+else if (teamsMode)
 {
     // Teams mode from CLI flag - prompt for configuration
     AnsiConsole.MarkupLine("\n[blue]Teams Mode Configuration[/]");
@@ -1720,9 +1726,9 @@ if (teamsMode)
     AnsiConsole.MarkupLine($"[green]Teams:[/] {agentCount} agents, Lead: {Markup.Escape(leadModel.DisplayName)}, Sub-agents: {Markup.Escape(teamModelNames)}");
     AnsiConsole.MarkupLine($"[green]Strategy:[/] {decomposition}, Merge: {mergeStrategy}");
 }
-else if (!freshMode && projectSettings.Teams?.IsEnabled == true)
+else if (!teamsMode && !freshMode && projectSettings.Teams?.IsEnabled == true)
 {
-    // Use saved teams config
+    // Auto-enable teams from saved config (no --teams flag needed)
     teamConfig = projectSettings.Teams;
     teamsMode = true;
     AnsiConsole.MarkupLine($"[dim]Using saved teams config: {teamConfig.AgentCount} agents[/]");

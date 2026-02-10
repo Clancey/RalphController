@@ -8,11 +8,10 @@ namespace RalphController.Models;
 public record TeamConfig
 {
     /// <summary>Number of sub-agents (2-8)</summary>
-    [JsonIgnore]
     public int AgentCount
     {
         get => _agentCount;
-        init => _agentCount = Math.Clamp(value, 2, 8);
+        set => _agentCount = Math.Clamp(value, 2, 8);
     }
     private int _agentCount = 2;
 

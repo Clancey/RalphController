@@ -22,7 +22,7 @@ public class TeamController : IDisposable
     private readonly SemaphoreSlim _mergeSemaphore;
     private CancellationTokenSource? _stopCts;
     private bool _disposed;
-    private TeamControllerState _state = TeamControllerState.Idle;
+    private volatile TeamControllerState _state = TeamControllerState.Idle;
 
     // Events
     public event Action<TeamControllerState>? OnStateChanged;
@@ -48,8 +48,12 @@ public class TeamController : IDisposable
     /// <summary>Current controller state</summary>
     public TeamControllerState State => _state;
 
-    /// <summary>Current phase</summary>
-    public TeamPhase CurrentPhase { get; private set; } = TeamPhase.Idle;
+    /// <summary>Current phase (volatile for cross-thread visibility)</summary>
+    public TeamPhase CurrentPhase => _currentPhase;
+    private volatile TeamPhase _currentPhase = TeamPhase.Idle;
+
+    /// <summary>When the current phase started (for elapsed time display)</summary>
+    public DateTime PhaseStartedAt { get; private set; } = DateTime.UtcNow;
 
     /// <summary>Task queue for monitoring</summary>
     public TaskQueue TaskQueue => _taskQueue;
@@ -189,8 +193,10 @@ public class TeamController : IDisposable
         var prompt = BuildDecompositionPrompt();
         var providerConfig = _teamConfig.LeadModel?.ToProviderConfig() ?? _config.ProviderConfig;
 
-        // For decomposition we need plain text output to parse structured task blocks.
-        // Override stream-json to text output since we're doing batch parsing, not streaming.
+        // For decomposition we need plain text output and NO tool use.
+        // The lead agent should only analyze the prompt/plan and output structured tasks.
+        // Remove --dangerously-skip-permissions so Claude doesn't enter an agentic loop
+        // editing files instead of just decomposing.
         var arguments = providerConfig.Arguments;
         if (providerConfig.UsesStreamJson)
         {
@@ -198,9 +204,22 @@ public class TeamController : IDisposable
                 .Replace("--output-format stream-json", "--output-format text")
                 .Replace("--verbose", "")
                 .Replace("--include-partial-messages", "");
-            // Collapse multiple spaces from removed flags
-            arguments = string.Join(' ', arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries));
         }
+        // Strip permission bypass and agentic flags — decomposition is analysis only
+        arguments = arguments
+            .Replace("--dangerously-skip-permissions", "")
+            .Replace("--dangerously-bypass-approvals-and-sandbox", "")  // Codex equivalent
+            .Replace("--allow-all-tools", "")  // Copilot equivalent
+            .Replace("--auto-approve", "");  // Cursor equivalent
+        // Add max-turns to prevent agentic looping (Claude CLI)
+        if (providerConfig.Provider == AIProvider.Claude && !arguments.Contains("--max-turns"))
+        {
+            arguments += " --max-turns 1";
+        }
+        // Collapse multiple spaces from removed flags
+        arguments = string.Join(' ', arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+        OnOutput?.Invoke($"Launching: {providerConfig.ExecutablePath} {arguments}");
 
         var psi = new ProcessStartInfo
         {
@@ -222,47 +241,131 @@ public class TeamController : IDisposable
             psi.Arguments = arguments;
         }
 
-        using var process = Process.Start(psi);
+        Process? process;
+        try
+        {
+            process = Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            OnError?.Invoke($"Failed to launch decomposition process: {ex.Message}");
+            OnOutput?.Invoke("Falling back to plan-based decomposition...");
+            await LoadTasksFromPlanAsync(cancellationToken);
+            return;
+        }
+
         if (process == null)
         {
             OnError?.Invoke("Failed to start lead agent for decomposition");
             return;
         }
 
-        if (providerConfig.UsesStdin || !providerConfig.UsesPromptArgument)
+        using (process)
         {
-            await process.StandardInput.WriteAsync(prompt);
-            process.StandardInput.Close();
+            if (providerConfig.UsesStdin || !providerConfig.UsesPromptArgument)
+            {
+                await process.StandardInput.WriteAsync(prompt);
+                process.StandardInput.Close();
+            }
+
+            OnOutput?.Invoke("Lead agent is analyzing the project (this may take 1-3 minutes)...");
+
+            // Read stdout line by line so we can show progress on output size
+            var outputBuilder = new StringBuilder();
+            var stderrLines = new StringBuilder();
+            var decomposeStart = DateTime.UtcNow;
+            var stdoutChars = 0;
+
+            // Stream stderr line by line for progress visibility
+            var stderrTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!process.StandardError.EndOfStream)
+                    {
+                        var line = await process.StandardError.ReadLineAsync(cancellationToken);
+                        if (line == null) break;
+                        stderrLines.AppendLine(line);
+                        if (line.Length > 0)
+                        {
+                            var hint = line.Length > 120 ? line[..120] + "..." : line;
+                            OnOutput?.Invoke($"  [decompose] {hint}");
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch { }
+            }, cancellationToken);
+
+            // Read stdout line by line to track progress
+            var stdoutTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!process.StandardOutput.EndOfStream)
+                    {
+                        var line = await process.StandardOutput.ReadLineAsync(cancellationToken);
+                        if (line == null) break;
+                        outputBuilder.AppendLine(line);
+                        Interlocked.Add(ref stdoutChars, line.Length);
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch { }
+            }, cancellationToken);
+
+            // Heartbeat timer — show elapsed time every 15s while waiting
+            using var heartbeat = new System.Timers.Timer(15_000);
+            heartbeat.Elapsed += (_, _) =>
+            {
+                if (!process.HasExited)
+                {
+                    var elapsed = DateTime.UtcNow - decomposeStart;
+                    var chars = Interlocked.CompareExchange(ref stdoutChars, 0, 0);
+                    var charInfo = chars > 0 ? $", {chars:N0} chars received" : "";
+                    OnOutput?.Invoke($"Still decomposing... ({elapsed.TotalSeconds:F0}s elapsed{charInfo})");
+                }
+            };
+            heartbeat.Start();
+
+            await process.WaitForExitAsync(cancellationToken);
+            heartbeat.Stop();
+
+            await stdoutTask;
+            await stderrTask;
+            var output = outputBuilder.ToString();
+            var error = stderrLines.ToString();
+
+            var totalElapsed = DateTime.UtcNow - decomposeStart;
+            OnOutput?.Invoke($"Decomposition finished in {totalElapsed.TotalSeconds:F0}s ({output.Length:N0} chars)");
+
+            OnOutput?.Invoke($"Decomposition process exited with code {process.ExitCode}");
+
+            if (process.ExitCode != 0)
+            {
+                OnError?.Invoke($"Lead agent decomposition failed (exit {process.ExitCode}): {error}");
+                OnOutput?.Invoke("Falling back to plan-based decomposition...");
+                await LoadTasksFromPlanAsync(cancellationToken);
+                return;
+            }
+
+            // Parse the structured output
+            var tasks = ParseDecomposedTasks(output);
+            if (tasks.Count == 0)
+            {
+                OnOutput?.Invoke("AI decomposition produced no tasks, falling back to plan...");
+                if (output.Length > 0)
+                {
+                    var preview = output.Length > 300 ? output[..300] + "..." : output;
+                    OnOutput?.Invoke($"AI output preview: {preview}");
+                }
+                await LoadTasksFromPlanAsync(cancellationToken);
+                return;
+            }
+
+            _taskQueue.EnqueueRange(tasks);
+            OnOutput?.Invoke($"AI decomposed into {tasks.Count} tasks");
         }
-
-        // Read stdout/stderr concurrently before WaitForExit to avoid deadlock
-        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-
-        var output = await outputTask;
-        var error = await errorTask;
-
-        if (process.ExitCode != 0)
-        {
-            OnError?.Invoke($"Lead agent decomposition failed: {error}");
-            // Fallback to plan-based decomposition
-            OnOutput?.Invoke("Falling back to plan-based decomposition...");
-            await LoadTasksFromPlanAsync(cancellationToken);
-            return;
-        }
-
-        // Parse the structured output
-        var tasks = ParseDecomposedTasks(output);
-        if (tasks.Count == 0)
-        {
-            OnOutput?.Invoke("AI decomposition produced no tasks, falling back to plan...");
-            await LoadTasksFromPlanAsync(cancellationToken);
-            return;
-        }
-
-        _taskQueue.EnqueueRange(tasks);
-        OnOutput?.Invoke($"AI decomposed into {tasks.Count} tasks");
     }
 
     /// <summary>
@@ -541,8 +644,10 @@ public class TeamController : IDisposable
             sb.AppendLine();
         }
 
-        sb.AppendLine(@"Read the project prompt and implementation plan above. Break the work into independent,
-parallelizable subtasks. Output in this EXACT format:
+        sb.AppendLine(@"IMPORTANT: You are a TASK PLANNER. DO NOT modify any files. DO NOT use tools to edit code.
+Your ONLY job is to analyze the project prompt and implementation plan above, then output a structured task list.
+
+Break the work into independent, parallelizable subtasks. Output ONLY in this EXACT format (no other text before or after):
 
 ---TEAM_TASKS---
 - TASK: <short title>
@@ -562,7 +667,8 @@ Guidelines:
 - Minimize file overlap between tasks
 - Order by dependency (independent tasks first)
 - Critical tasks should be done first
-- Aim for " + _teamConfig.AgentCount + @" to " + (_teamConfig.AgentCount * 3) + @" tasks total");
+- Aim for " + _teamConfig.AgentCount + @" to " + (_teamConfig.AgentCount * 3) + @" tasks total
+- Output ONLY the task list block above — do not read, edit, or create any files");
 
         return sb.ToString();
     }
@@ -687,7 +793,8 @@ Guidelines:
 
     private void SetPhase(TeamPhase phase)
     {
-        CurrentPhase = phase;
+        _currentPhase = phase;
+        PhaseStartedAt = DateTime.UtcNow;
         OnPhaseChanged?.Invoke(phase);
     }
 

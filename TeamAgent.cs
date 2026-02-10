@@ -1,6 +1,8 @@
 using RalphController.Models;
 using RalphController.Git;
 using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
 
 namespace RalphController;
 
@@ -412,25 +414,64 @@ public class TeamAgent : IDisposable
                 process.StandardInput.Close();
             }
 
-            // Read output
-            var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            // Read output — stream stdout line-by-line to parse stream-json and
+            // emit only meaningful text, avoiding raw JSON flooding the TUI.
+            var outputBuilder = new StringBuilder();
+            var textBuilder = new StringBuilder();  // Accumulated parsed text
+            var lastProgressAt = DateTime.UtcNow;
+            var usesStreamJson = providerConfig.UsesStreamJson;
+
+            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+
+            // Read stdout line by line
+            while (!process.StandardOutput.EndOfStream)
+            {
+                var line = await process.StandardOutput.ReadLineAsync(cancellationToken);
+                if (line == null) break;
+
+                outputBuilder.AppendLine(line);
+                Statistics.OutputChars += line.Length;
+
+                if (usesStreamJson)
+                {
+                    // Parse stream-json to extract text deltas
+                    var text = ParseStreamJsonLine(line);
+                    if (text != null)
+                    {
+                        textBuilder.Append(text);
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(line))
+                {
+                    // Non-stream-json providers: forward non-empty lines directly
+                    textBuilder.AppendLine(line);
+                }
+
+                // Emit a progress heartbeat every 30 seconds so TUI shows activity
+                if ((DateTime.UtcNow - lastProgressAt).TotalSeconds >= 30)
+                {
+                    lastProgressAt = DateTime.UtcNow;
+                    var charsSoFar = textBuilder.Length;
+                    OnOutput?.Invoke($"Working... ({charsSoFar:N0} chars of output so far)");
+                }
+            }
 
             await process.WaitForExitAsync(cancellationToken);
 
-            var output = await outputTask;
-            var error = await errorTask;
+            var output = outputBuilder.ToString();
+            var error = await stderrTask;
 
-            // Stream output to listeners
-            if (!string.IsNullOrEmpty(output))
+            // Emit a summary of the parsed text output (last few meaningful lines)
+            var parsedText = textBuilder.ToString().Trim();
+            if (!string.IsNullOrEmpty(parsedText))
             {
-                foreach (var line in output.Split('\n'))
+                // Show last meaningful line as a completion indicator
+                var lastLines = parsedText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                if (lastLines.Length > 0)
                 {
-                    if (!string.IsNullOrWhiteSpace(line))
-                    {
-                        OnOutput?.Invoke(line);
-                        Statistics.OutputChars += line.Length;
-                    }
+                    var lastLine = lastLines[^1].Trim();
+                    if (lastLine.Length > 200) lastLine = lastLine[..200] + "...";
+                    OnOutput?.Invoke(lastLine);
                 }
             }
 
@@ -455,6 +496,51 @@ public class TeamAgent : IDisposable
         catch (Exception ex)
         {
             return new AgentProcessResult { Success = false, Error = ex.Message };
+        }
+    }
+
+    /// <summary>
+    /// Parse a line of stream-json output to extract text content.
+    /// Returns the text delta or null if the line isn't a text event.
+    /// </summary>
+    private static string? ParseStreamJsonLine(string line)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("{"))
+                return null;
+
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+
+            // Claude stream-json: {"type":"stream_event","event":{"type":"content_block_delta","delta":{"text":"..."}}}
+            if (root.TryGetProperty("type", out var typeEl) && typeEl.GetString() == "stream_event")
+            {
+                if (root.TryGetProperty("event", out var eventEl))
+                {
+                    if (eventEl.TryGetProperty("type", out var eventTypeEl) &&
+                        eventTypeEl.GetString() == "content_block_delta")
+                    {
+                        if (eventEl.TryGetProperty("delta", out var deltaEl) &&
+                            deltaEl.TryGetProperty("text", out var textEl))
+                        {
+                            return textEl.GetString();
+                        }
+                    }
+                }
+            }
+
+            // Gemini stream-json: similar structure
+            if (root.TryGetProperty("text", out var directTextEl))
+            {
+                return directTextEl.GetString();
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
         }
     }
 

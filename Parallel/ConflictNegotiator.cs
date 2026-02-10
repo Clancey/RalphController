@@ -205,6 +205,7 @@ public class ConflictNegotiator
         try
         {
             // For negotiation we need plain text output to parse resolution blocks.
+            // Strip agentic flags — negotiation is analysis only, no file editing.
             var arguments = _providerConfig.Arguments;
             if (_providerConfig.UsesStreamJson)
             {
@@ -212,9 +213,17 @@ public class ConflictNegotiator
                     .Replace("--output-format stream-json", "--output-format text")
                     .Replace("--verbose", "")
                     .Replace("--include-partial-messages", "");
-                // Collapse multiple spaces from removed flags
-                arguments = string.Join(' ', arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries));
             }
+            arguments = arguments
+                .Replace("--dangerously-skip-permissions", "")
+                .Replace("--dangerously-bypass-approvals-and-sandbox", "")
+                .Replace("--allow-all-tools", "")
+                .Replace("--auto-approve", "");
+            if (_providerConfig.Provider == AIProvider.Claude && !arguments.Contains("--max-turns"))
+            {
+                arguments += " --max-turns 1";
+            }
+            arguments = string.Join(' ', arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
             var psi = new ProcessStartInfo
             {

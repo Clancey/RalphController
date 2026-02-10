@@ -2087,6 +2087,47 @@ if (noTui)
         return 0;
     }
 
+    // Teams mode in no-TUI
+    if (teamsMode && teamConfig != null)
+    {
+        using var noTuiTeamController = new TeamController(config);
+        var teamStopRequested = false;
+
+        noTuiTeamController.OnOutput += msg => Console.WriteLine($"[Teams] {msg}");
+        noTuiTeamController.OnError += msg => Console.Error.WriteLine($"[Teams ERROR] {msg}");
+        noTuiTeamController.OnPhaseChanged += phase => Console.WriteLine($"\n--- Phase: {phase} ---");
+        noTuiTeamController.OnAgentUpdate += stats =>
+            Console.WriteLine($"[{stats.Name}] State: {stats.State}, Tasks: {stats.TasksCompleted}/{stats.TasksCompleted + stats.TasksFailed} done");
+        noTuiTeamController.OnQueueUpdate += stats =>
+            Console.WriteLine($"[Queue] {stats.Completed}/{stats.Total} done, {stats.Pending} pending, {stats.Failed} failed");
+
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            teamStopRequested = true;
+            Console.WriteLine("\n[Stopping teams...]");
+            noTuiTeamController.Stop();
+        };
+
+        Console.WriteLine("[Press Ctrl+C to stop]\n");
+
+        try
+        {
+            await noTuiTeamController.StartAsync();
+        }
+        catch (OperationCanceledException) when (teamStopRequested)
+        {
+            // Expected on Ctrl+C
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Teams FATAL] {ex.Message}");
+        }
+
+        Console.WriteLine("\n[Goodbye!]");
+        return 0;
+    }
+
     // For other providers, use LoopController
     using var consoleController = new LoopController(config);
     var loopStopRequested = false;

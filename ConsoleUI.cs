@@ -1076,7 +1076,10 @@ public class ConsoleUI : IDisposable
     {
         var state = _teamController!.State;
         var phase = _teamController.CurrentPhase;
-        var agentCount = _agentStats.Count;
+        // Show active agent count, or configured count during decomposition
+        var agentCount = _agentStats.Count > 0
+            ? _agentStats.Count
+            : _config.Teams?.AgentCount ?? 0;
 
         var stateColor = state switch
         {
@@ -1133,7 +1136,14 @@ public class ConsoleUI : IDisposable
 
         if (agents.Length == 0)
         {
-            return new Panel(new Markup("[dim]No agents running...[/]"))
+            var phase = _teamController?.CurrentPhase ?? TeamPhase.Idle;
+            var noAgentMsg = phase switch
+            {
+                TeamPhase.Decomposing => "[dim]Waiting for task decomposition to finish...[/]",
+                TeamPhase.Complete => "[dim]All agents finished.[/]",
+                _ => "[dim]No agents running...[/]"
+            };
+            return new Panel(new Markup(noAgentMsg))
                 .Header("[bold]Agents[/]")
                 .Border(BoxBorder.Rounded)
                 .Expand();
@@ -1239,14 +1249,19 @@ public class ConsoleUI : IDisposable
             _ => "[[Q]]uit"
         };
 
-        // Show phase-specific hint if running
+        // Show phase-specific hint with elapsed time if running
         if (state == TeamControllerState.Running)
         {
+            var elapsed = DateTime.UtcNow - _teamController.PhaseStartedAt;
+            var elapsedStr = elapsed.TotalSeconds < 60
+                ? $"{elapsed.TotalSeconds:F0}s"
+                : $"{elapsed.TotalMinutes:F0}m {elapsed.Seconds}s";
+
             var phaseHint = _teamController.CurrentPhase switch
             {
-                TeamPhase.Decomposing => "[dim]Decomposing tasks...[/]  ",
-                TeamPhase.Executing => "[dim]Agents working...[/]  ",
-                TeamPhase.Verifying => "[dim]Verifying results...[/]  ",
+                TeamPhase.Decomposing => $"[dim]AI analyzing project... ({elapsedStr}) - this may take 1-3 min[/]  ",
+                TeamPhase.Executing => $"[dim]Agents working... ({elapsedStr})[/]  ",
+                TeamPhase.Verifying => $"[dim]Verifying results... ({elapsedStr})[/]  ",
                 TeamPhase.Complete => "[dim]Complete[/]  ",
                 _ => ""
             };

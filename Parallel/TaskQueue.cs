@@ -1,5 +1,7 @@
 using RalphController.Models;
 using System.Collections.Concurrent;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using AgentTaskStatus = RalphController.Models.TaskStatus;
 
 namespace RalphController.Parallel;
@@ -14,6 +16,14 @@ public class TaskQueue
     private readonly ConcurrentBag<string> _priorityQueue = new();
     private readonly object _lock = new();
     private readonly TimeSpan _claimTimeout;
+    private readonly string? _persistPath;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter() }
+    };
 
     /// <summary>Fired when a new task is added</summary>
     public event Action<AgentTask>? OnTaskEnqueued;
@@ -27,9 +37,13 @@ public class TaskQueue
     /// <summary>Fired when a task fails</summary>
     public event Action<AgentTask>? OnTaskFailed;
 
-    public TaskQueue(TimeSpan? claimTimeout = null)
+    public TaskQueue(TimeSpan? claimTimeout = null, string? persistPath = null)
     {
         _claimTimeout = claimTimeout ?? TimeSpan.FromMinutes(5);
+        _persistPath = persistPath;
+
+        if (_persistPath != null)
+            TryLoadFromDisk();
     }
 
     /// <summary>
@@ -49,6 +63,7 @@ public class TaskQueue
         }
 
         OnTaskEnqueued?.Invoke(task);
+        SaveToDisk();
     }
 
     /// <summary>
@@ -120,6 +135,7 @@ public class TaskQueue
             task.ClaimedByAgentId = agentId;
             task.ClaimedAt = DateTime.UtcNow;
             OnTaskClaimed?.Invoke(task);
+            SaveToDisk();
             return true;
         }
     }
@@ -146,6 +162,7 @@ public class TaskQueue
             task.Result = result;
             task.CompletedAt = DateTime.UtcNow;
             OnTaskCompleted?.Invoke(task);
+            SaveToDisk();
         }
     }
 
@@ -180,6 +197,8 @@ public class TaskQueue
                 task.Status = AgentTaskStatus.Failed;
                 OnTaskFailed?.Invoke(task);
             }
+
+            SaveToDisk();
         }
     }
 
@@ -259,6 +278,82 @@ public class TaskQueue
         _tasks.Clear();
         while (_pendingQueue.TryDequeue(out _)) { }
         while (_priorityQueue.TryTake(out _)) { }
+        SaveToDisk();
+    }
+
+    /// <summary>
+    /// Persist current task state to disk
+    /// </summary>
+    private void SaveToDisk()
+    {
+        if (_persistPath == null) return;
+
+        try
+        {
+            var tasks = _tasks.Values.ToList();
+            var json = JsonSerializer.Serialize(tasks, JsonOptions);
+            var dir = Path.GetDirectoryName(_persistPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+            File.WriteAllText(_persistPath, json);
+        }
+        catch
+        {
+            // Don't crash the queue over persistence failures
+        }
+    }
+
+    /// <summary>
+    /// Restore task state from disk
+    /// </summary>
+    private void TryLoadFromDisk()
+    {
+        if (_persistPath == null || !File.Exists(_persistPath)) return;
+
+        try
+        {
+            var json = File.ReadAllText(_persistPath);
+            var tasks = JsonSerializer.Deserialize<List<AgentTask>>(json, JsonOptions);
+            if (tasks == null) return;
+
+            foreach (var task in tasks)
+            {
+                // Reset claimed/in-progress tasks back to pending (agent is gone after crash)
+                if (task.Status == AgentTaskStatus.Claimed || task.Status == AgentTaskStatus.InProgress)
+                {
+                    task.Status = AgentTaskStatus.Pending;
+                    task.ClaimedByAgentId = null;
+                    task.ClaimedAt = null;
+                }
+
+                _tasks[task.TaskId] = task;
+
+                // Re-enqueue pending tasks
+                if (task.Status == AgentTaskStatus.Pending)
+                {
+                    if (task.Priority == TaskPriority.Critical || task.Priority == TaskPriority.High)
+                        _priorityQueue.Add(task.TaskId);
+                    else
+                        _pendingQueue.Enqueue(task.TaskId);
+                }
+            }
+        }
+        catch
+        {
+            // Corrupted state file — start fresh
+        }
+    }
+
+    /// <summary>
+    /// Delete the persistence file (cleanup after successful completion)
+    /// </summary>
+    public void DeletePersistenceFile()
+    {
+        if (_persistPath != null && File.Exists(_persistPath))
+        {
+            try { File.Delete(_persistPath); }
+            catch { /* ignore */ }
+        }
     }
 }
 

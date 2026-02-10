@@ -38,7 +38,8 @@ public class TeamController : IDisposable
         _config = config;
         _teamConfig = config.Teams ?? new TeamConfig();
 
-        _taskQueue = new TaskQueue(TimeSpan.FromSeconds(_teamConfig.TaskClaimTimeoutSeconds));
+        var queuePersistPath = Path.Combine(config.ProjectFilesDirectory, ".ralph-queue.json");
+        _taskQueue = new TaskQueue(TimeSpan.FromSeconds(_teamConfig.TaskClaimTimeoutSeconds), queuePersistPath);
         _gitManager = new GitWorktreeManager(config.TargetDirectory);
         _negotiator = new ConflictNegotiator(config, config.ProviderConfig);
         _mergeSemaphore = new SemaphoreSlim(_teamConfig.MaxConcurrentMerges);
@@ -76,13 +77,23 @@ public class TeamController : IDisposable
 
             OnOutput?.Invoke($"Source: {sourceBranch}, Target: {targetBranch}");
 
-            // Phase 1: Decompose
+            // Phase 1: Decompose (skip if tasks restored from disk)
             SetPhase(TeamPhase.Decomposing);
             SetState(TeamControllerState.Running);
-            await DecomposeAsync(_stopCts.Token);
+
+            var existingStats = _taskQueue.GetStatistics();
+            if (existingStats.Total > 0 && existingStats.Pending > 0)
+            {
+                OnOutput?.Invoke($"Restored {existingStats.Total} tasks from previous session ({existingStats.Completed} completed, {existingStats.Pending} pending)");
+            }
+            else
+            {
+                await DecomposeAsync(_stopCts.Token);
+            }
 
             var stats = _taskQueue.GetStatistics();
-            OnOutput?.Invoke($"Decomposed into {stats.Total} tasks");
+            if (existingStats.Total == 0)
+                OnOutput?.Invoke($"Decomposed into {stats.Total} tasks");
             OnQueueUpdate?.Invoke(stats);
 
             if (stats.Total == 0)
@@ -102,6 +113,7 @@ public class TeamController : IDisposable
 
             SetPhase(TeamPhase.Complete);
             SetState(TeamControllerState.Stopped);
+            _taskQueue.DeletePersistenceFile();
             OnOutput?.Invoke("Teams execution complete!");
         }
         catch (OperationCanceledException)

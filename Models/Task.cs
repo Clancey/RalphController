@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace RalphController.Models;
 
 /// <summary>
@@ -6,18 +8,20 @@ namespace RalphController.Models;
 public class AgentTask
 {
     /// <summary>Unique task identifier</summary>
-    public string TaskId { get; init; } = Guid.NewGuid().ToString("N");
+    public string TaskId { get; set; } = Guid.NewGuid().ToString("N");
 
     /// <summary>Task description (from implementation_plan.md)</summary>
-    public string Description { get; init; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
 
     /// <summary>Original line from implementation_plan.md</summary>
-    public string? SourceLine { get; init; }
+    public string? SourceLine { get; set; }
 
     /// <summary>Task priority</summary>
-    public TaskPriority Priority { get; init; } = TaskPriority.Normal;
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public TaskPriority Priority { get; set; } = TaskPriority.Normal;
 
     /// <summary>Current status</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public TaskStatus Status { get; set; } = TaskStatus.Pending;
 
     /// <summary>Agent ID that claimed this task</summary>
@@ -36,22 +40,22 @@ public class AgentTask
     public int RetryCount { get; set; }
 
     /// <summary>Task dependencies (task IDs that must complete first)</summary>
-    public List<string> DependsOn { get; init; } = new();
+    public List<string> DependsOn { get; set; } = new();
 
     /// <summary>Category/section from implementation plan</summary>
-    public string? Category { get; init; }
+    public string? Category { get; set; }
 
     /// <summary>When the task was created</summary>
-    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>When the task was completed</summary>
     public DateTime? CompletedAt { get; set; }
 
     /// <summary>Likely files to modify (for teams decomposition)</summary>
-    public List<string> Files { get; init; } = new();
+    public List<string> Files { get; set; } = new();
 
     /// <summary>Short title for display</summary>
-    public string? Title { get; init; }
+    public string? Title { get; set; }
 }
 
 /// <summary>

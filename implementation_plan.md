@@ -15,15 +15,15 @@
 
 ## High Priority — Task System (spec: task-system.md)
 - [x] Create `Parallel/FileLock.cs` — file-lock helper using `FileStream(FileShare.None)` with timeout
-- [?] Rename/rewrite `Parallel/TaskQueue.cs` → `Parallel/TaskStore.cs` with dependency-aware claiming
-- [?] Update `Models/Task.cs` — simplify to 3+1 states (Pending, InProgress, Completed, Failed), add `IsClaimable()` method
-- [?] Change dependency references from title-based to stable task IDs (`task-1`, `task-2`, etc.)
-- [?] Implement `TryClaim()` with file-lock and dependency enforcement
-- [?] Add `GetClaimable()`, `GetBlockedBy()`, `GetInProgress()` queries
-- [?] Add `TaskCompleted`, `TaskUnblocked`, `TaskFailed` events on TaskStore
-- [?] Persist tasks to `~/.ralph/teams/{team}/tasks/tasks.json` instead of `.ralph-queue.json`
-- [?] Add stale claim timeout release for crashed agents
-- [?] Update decomposition parser to produce ID-based deps and resolve title references
+- [x] Rename/rewrite `Parallel/TaskQueue.cs` → `Parallel/TaskStore.cs` with dependency-aware claiming
+- [x] Update `Models/Task.cs` — simplify to 3+1 states (Pending, InProgress, Completed, Failed), add `IsClaimable()` method
+- [x] Change dependency references from title-based to stable task IDs (`task-1`, `task-2`, etc.)
+- [x] Implement `TryClaim()` with file-lock and dependency enforcement
+- [x] Add `GetClaimable()`, `GetBlockedBy()`, `GetInProgress()` queries
+- [x] Add `TaskCompleted`, `TaskUnblocked`, `TaskFailed` events on TaskStore
+- [x] Persist tasks to `~/.ralph/teams/{team}/tasks/tasks.json` instead of `.ralph-queue.json`
+- [x] Add stale claim timeout release for crashed agents
+- [x] Update decomposition parser to produce ID-based deps and resolve title references
 
 ## High Priority — Agent Lifecycle (spec: agent-lifecycle.md)
 - [ ] Define `AgentState` enum: Spawning, Ready, Claiming, Working, PlanningWork, Idle, ShuttingDown, Stopped, Error

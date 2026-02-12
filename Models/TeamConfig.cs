@@ -68,6 +68,24 @@ public record TeamConfig
     /// </summary>
     public bool DelegateMode { get; init; } = false;
 
+    /// <summary>
+    /// Require all agents to submit plans before implementation.
+    /// Individual agents can override this via AgentSpawnConfig.
+    /// </summary>
+    public bool RequirePlanApproval { get; init; } = false;
+
+    /// <summary>
+    /// Per-agent plan approval overrides. Key is agent index (0-based),
+    /// value is whether that agent requires plan approval.
+    /// Agents not listed use the global RequirePlanApproval setting.
+    /// </summary>
+    public Dictionary<int, bool> AgentPlanApproval { get; init; } = new();
+
+    /// <summary>
+    /// Team member configurations with per-agent settings
+    /// </summary>
+    public List<TeamMemberConfig> Members { get; init; } = new();
+
     /// <summary>Teams mode is enabled</summary>
     [JsonIgnore]
     public bool IsEnabled => AgentCount > 1;

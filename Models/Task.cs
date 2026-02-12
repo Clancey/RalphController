@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using RalphController.Merge;
 
 namespace RalphController.Models;
 
@@ -44,6 +45,10 @@ public class AgentTask
 
     /// <summary>Error message if failed</summary>
     public string? Error { get; set; }
+
+    /// <summary>Merge status for this task's worktree branch</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public MergeStatus MergeStatus { get; set; } = MergeStatus.Pending;
 
     /// <summary>Number of times this task has been retried</summary>
     public int RetryCount { get; set; }

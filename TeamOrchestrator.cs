@@ -59,7 +59,7 @@ public class TeamOrchestrator : IDisposable
 
         _gitManager = new GitWorktreeManager(config.TargetDirectory);
         _negotiator = new ConflictNegotiator(config, config.ProviderConfig);
-        _mergeManager = new MergeManager(_gitManager, _negotiator, _taskStore, _teamConfig);
+        _mergeManager = new MergeManager(_gitManager, _negotiator, _taskStore, _teamConfig, config);
         _mergeSemaphore = new SemaphoreSlim(_teamConfig.MaxConcurrentMerges);
     }
 

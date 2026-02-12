@@ -19,6 +19,7 @@ public class MergeManager : IDisposable
     private readonly ConflictNegotiator _negotiator;
     private readonly TaskStore _taskStore;
     private readonly TeamConfig _teamConfig;
+    private readonly RalphConfig? _config;
     private readonly Queue<string> _mergeQueue = new();
     private readonly Dictionary<string, string> _fileOwnership = new(); // file path -> agentId
     private readonly Dictionary<string, MergeStatus> _mergeStatuses = new();
@@ -54,12 +55,14 @@ public class MergeManager : IDisposable
         ConflictNegotiator negotiator,
         TaskStore taskStore,
         TeamConfig teamConfig,
+        RalphConfig? config = null,
         string? lockDirectory = null)
     {
         _worktrees = worktrees;
         _negotiator = negotiator;
         _taskStore = taskStore;
         _teamConfig = teamConfig;
+        _config = config;
 
         var lockDir = lockDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -888,6 +891,21 @@ public class MergeManager : IDisposable
 
         if (!resolution.Success || resolution.RequiresManualIntervention)
         {
+            // Fall back to full AI merge-fix agent
+            if (_config != null)
+            {
+                var fixAgent = new MergeFixAgent(_config, _teamConfig);
+                var worktreeDir = _teamConfig.UseWorktrees
+                    ? Path.Combine(Directory.GetCurrentDirectory(), ".ralph-worktrees", $"team-{agentId}")
+                    : Directory.GetCurrentDirectory();
+
+                return await fixAgent.ResolveAsync(
+                    worktreeDir,
+                    mergeResult.Conflicts,
+                    mergeResult.Error,
+                    task.Description,
+                    ct);
+            }
             return false;
         }
 

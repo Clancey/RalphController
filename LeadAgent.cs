@@ -321,9 +321,42 @@ public class LeadAgent : IDisposable
                 }
                 else
                 {
-                    _taskStore.Fail(taskId, $"Merge failed: {mergeResult.Error}");
-                    Statistics.TasksFailed++;
-                    OnError?.Invoke($"Merge failed for {taskId}: {mergeResult.Error}");
+                    // Try AI merge-fix agent before giving up
+                    OnOutput?.Invoke($"Merge failed for {taskId}, attempting AI merge-fix agent...");
+                    var task = taskAgent.Task;
+                    var fixAgent = new MergeFixAgent(_config, _teamConfig);
+                    fixAgent.OnOutput += output => OnOutput?.Invoke(output);
+                    fixAgent.OnError += error => OnError?.Invoke(error);
+
+                    var resolved = await fixAgent.ResolveAsync(
+                        _gitManager.RepositoryRoot,
+                        mergeResult.Conflicts ?? new(),
+                        mergeResult.Error,
+                        task.Description,
+                        ct);
+
+                    if (resolved)
+                    {
+                        // Commit the resolution and mark success
+                        await _gitManager.CommitWorktreeAsync(
+                            _gitManager.RepositoryRoot,
+                            $"[merge-fix] {task.Title ?? task.Description}",
+                            ct);
+                        _taskStore.Complete(taskId, new TaskResult(
+                            true,
+                            $"{result.Summary} (merge conflicts resolved by AI)",
+                            result.AllFilesModified,
+                            result.Code?.Output ?? "",
+                            Statistics.TotalDuration));
+                        Statistics.TasksCompleted++;
+                        OnOutput?.Invoke($"Task {taskId} merge conflicts resolved and committed");
+                    }
+                    else
+                    {
+                        _taskStore.Fail(taskId, $"Merge failed: {mergeResult.Error}");
+                        Statistics.TasksFailed++;
+                        OnError?.Invoke($"Merge failed for {taskId}: {mergeResult.Error}");
+                    }
                 }
             }
             finally

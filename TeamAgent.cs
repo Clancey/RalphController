@@ -1,6 +1,7 @@
 using RalphController.Models;
 using RalphController.Git;
 using RalphController.Parallel;
+using RalphController.Messaging;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -23,11 +24,14 @@ public class TeamAgent : IDisposable
     private readonly ModelSpec? _assignedModel;
     private readonly string? _spawnPrompt;
     private TaskStore? _taskStore;
+    private MessageBus? _messageBus;
     private CancellationTokenSource? _stopCts;
     private CancellationTokenSource? _forceStopCts;
     private bool _shutdownRequested;
+    private bool _shutdownAccepted;
     private bool _disposed;
     private readonly SemaphoreSlim _idleSignal = new(0);
+    private readonly List<Message> _pendingContext = new();
 
     /// <summary>Agent ID</summary>
     public string AgentId => _agentId;
@@ -43,6 +47,9 @@ public class TeamAgent : IDisposable
 
     /// <summary>Spawn prompt (task-specific context)</summary>
     public string? SpawnPrompt => _spawnPrompt;
+
+    /// <summary>Message bus for inter-agent communication</summary>
+    public MessageBus? MessageBus => _messageBus;
 
     // Events
     public event Action<AgentState>? OnStateChanged;
@@ -119,9 +126,74 @@ public class TeamAgent : IDisposable
         _taskStore.TaskUnblocked += OnTaskUnblocked;
     }
 
+    /// <summary>
+    /// Set the message bus for this agent (required for message processing)
+    /// </summary>
+    public void SetMessageBus(MessageBus messageBus)
+    {
+        _messageBus = messageBus;
+    }
+
     private void OnTaskUnblocked(AgentTask task)
     {
         _idleSignal.Release();
+    }
+
+    /// <summary>
+    /// Process pending messages from inbox. Handles shutdown requests, plan approvals, etc.
+    /// </summary>
+    private void ProcessPendingMessages()
+    {
+        if (_messageBus == null) return;
+
+        var messages = _messageBus.Poll();
+        foreach (var msg in messages)
+        {
+            switch (msg.Type)
+            {
+                case MessageType.ShutdownRequest:
+                    HandleShutdownRequest(msg);
+                    break;
+                case MessageType.PlanApproval:
+                    _pendingContext.Add(msg);
+                    break;
+                case MessageType.TaskAssignment:
+                    HandleTaskAssignment(msg);
+                    break;
+                case MessageType.Text:
+                case MessageType.Broadcast:
+                    _pendingContext.Add(msg);
+                    break;
+            }
+        }
+    }
+
+    private void HandleShutdownRequest(Message msg)
+    {
+        if (State == AgentState.Idle)
+        {
+            _shutdownAccepted = true;
+            _shutdownRequested = true;
+            _messageBus?.Send(Message.ShutdownResponseMessage(_agentId, true));
+            _idleSignal.Release();
+        }
+        else
+        {
+            _shutdownAccepted = false;
+            _shutdownRequested = true;
+            _messageBus?.Send(Message.ShutdownResponseMessage(
+                _agentId,
+                false,
+                $"Currently {State}. Will shutdown after current task."));
+        }
+    }
+
+    private void HandleTaskAssignment(Message msg)
+    {
+        if (msg.Metadata?.TryGetValue("taskId", out var taskId) == true)
+        {
+            OnOutput?.Invoke($"Received task assignment: {taskId}");
+        }
     }
 
     /// <summary>
@@ -256,7 +328,9 @@ public class TeamAgent : IDisposable
         {
             while (!_stopCts.Token.IsCancellationRequested && !_shutdownRequested)
             {
-                if (_shutdownRequested)
+                ProcessPendingMessages();
+
+                if (_shutdownRequested && State == AgentState.Idle)
                 {
                     SetState(AgentState.ShuttingDown);
                     break;
@@ -304,6 +378,11 @@ public class TeamAgent : IDisposable
                     }
                 }
 
+                if (_shutdownRequested)
+                {
+                    _messageBus?.Send(Message.ShutdownResponseMessage(_agentId, false, "Shutdown requested, finishing current task first"));
+                }
+
                 SetState(AgentState.Working);
                 await ExecuteTaskAsync(task, _stopCts.Token);
             }
@@ -321,6 +400,7 @@ public class TeamAgent : IDisposable
     /// <summary>
     /// Wait for a claimable task with exponential backoff (1s → 30s).
     /// Wakes immediately when TaskUnblocked event fires.
+    /// Also processes pending messages during idle.
     /// </summary>
     private async Task WaitForClaimableTask(CancellationToken cancellationToken)
     {
@@ -329,6 +409,13 @@ public class TeamAgent : IDisposable
 
         while (!cancellationToken.IsCancellationRequested && !_shutdownRequested)
         {
+            ProcessPendingMessages();
+
+            if (_shutdownRequested)
+            {
+                return;
+            }
+
             if (_taskStore?.GetClaimable().Count > 0)
             {
                 return;
@@ -353,11 +440,19 @@ public class TeamAgent : IDisposable
 
     /// <summary>
     /// Wait for shutdown request or new work to become available.
+    /// Also processes pending messages during idle.
     /// </summary>
     private async Task WaitForShutdownOrNewWork(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested && !_shutdownRequested)
         {
+            ProcessPendingMessages();
+
+            if (_shutdownRequested)
+            {
+                return;
+            }
+
             if (_taskStore?.GetClaimable().Count > 0)
             {
                 return;

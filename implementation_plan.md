@@ -44,7 +44,7 @@
 - [?] Implement `Broadcast()` — append to all agent inboxes except sender
 - [?] Implement `Poll()` — non-blocking read of new messages since cursor
 - [?] Implement `WaitForMessages()` / `WaitForMessage(type)` — blocking with timeout
-- [ ] Integrate message processing into TeamAgent run loop (between tasks and during idle)
+- [?] Integrate message processing into TeamAgent run loop (between tasks and during idle)
 - [?] Store mailboxes at `~/.ralph/teams/{team}/mailbox/{agent-id}.jsonl`
 
 ## High Priority — Orchestration (spec: orchestration.md)

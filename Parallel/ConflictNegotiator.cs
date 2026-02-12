@@ -34,6 +34,26 @@ public class ConflictNegotiator
         string agent2Branch,
         CancellationToken cancellationToken = default)
     {
+        return await NegotiateResolutionAsync(
+            conflicts, agent1Id, agent1Branch, agent2Id, agent2Branch,
+            agent1TaskDescription: null, agent2TaskDescription: null,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Resolve conflicts via AI negotiation with task context.
+    /// Enhanced overload that includes task descriptions and intent for better resolution.
+    /// </summary>
+    public async Task<ConflictResolution> NegotiateResolutionAsync(
+        List<GitConflict> conflicts,
+        string agent1Id,
+        string agent1Branch,
+        string agent2Id,
+        string agent2Branch,
+        string? agent1TaskDescription,
+        string? agent2TaskDescription,
+        CancellationToken cancellationToken = default)
+    {
         var info = new ConflictInfo
         {
             Conflicts = conflicts,
@@ -47,7 +67,9 @@ public class ConflictNegotiator
         OnConflictDetected?.Invoke(info);
         OnNegotiationStart?.Invoke(info);
 
-        var prompt = BuildNegotiationPrompt(conflicts, agent1Branch, agent2Branch);
+        var prompt = BuildNegotiationPrompt(
+            conflicts, agent1Id, agent1Branch, agent2Id, agent2Branch,
+            agent1TaskDescription, agent2TaskDescription);
         var result = await RunAIProcessAsync(prompt, cancellationToken);
 
         if (!result.Success)
@@ -93,30 +115,56 @@ public class ConflictNegotiator
 
     private string BuildNegotiationPrompt(
         List<GitConflict> conflicts,
-        string branch1,
-        string branch2)
+        string agent1Id,
+        string agent1Branch,
+        string agent2Id,
+        string agent2Branch,
+        string? agent1TaskDescription,
+        string? agent2TaskDescription)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("--- CONFLICT NEGOTIATION REQUEST ---");
+        sb.AppendLine("Two agents made conflicting changes to the same files.");
         sb.AppendLine();
-        sb.AppendLine("Two AI agents have made conflicting changes. You must help resolve these conflicts.");
-        sb.AppendLine();
-        sb.AppendLine($"Branch 1: {branch1}");
-        sb.AppendLine($"Branch 2: {branch2}");
-        sb.AppendLine();
-        sb.AppendLine("Conflicts found:");
 
-        foreach (var conflict in conflicts.Take(5))
+        // Agent A context (the branch being merged in)
+        sb.AppendLine($"Agent A ({agent1Id}): {agent1TaskDescription ?? "No task description available"}");
+
+        // Try to get diff for Agent A's branch
+        var diffA = GetBranchDiff(agent1Branch);
+        if (!string.IsNullOrEmpty(diffA))
+        {
+            sb.AppendLine("Their changes:");
+            sb.AppendLine(TruncateDiff(diffA, MaxDiffLength));
+        }
+        sb.AppendLine();
+
+        // Agent B context (the target branch / previously merged work)
+        sb.AppendLine($"Agent B ({agent2Id}): {agent2TaskDescription ?? "No task description available"}");
+
+        // Try to get diff for Agent B's branch
+        var diffB = GetBranchDiff(agent2Branch);
+        if (!string.IsNullOrEmpty(diffB))
+        {
+            sb.AppendLine("Their changes:");
+            sb.AppendLine(TruncateDiff(diffB, MaxDiffLength));
+        }
+        sb.AppendLine();
+
+        // Conflicted files with content
+        sb.AppendLine("Conflicted files:");
+        foreach (var conflict in conflicts.Take(MaxConflictFiles))
         {
             sb.AppendLine();
-            sb.AppendLine($"File: {conflict.FilePath}");
+            sb.AppendLine($"--- {conflict.FilePath} ---");
 
             if (File.Exists(conflict.FullPath))
             {
                 try
                 {
                     var content = File.ReadAllText(conflict.FullPath);
-                    var preview = content.Length > 500 ? content[..500] + "..." : content;
+                    var preview = content.Length > MaxFilePreviewLength
+                        ? content[..MaxFilePreviewLength] + "\n... (truncated)"
+                        : content;
                     sb.AppendLine(preview);
                 }
                 catch
@@ -126,19 +174,83 @@ public class ConflictNegotiator
             }
         }
 
-        if (conflicts.Count > 5)
+        if (conflicts.Count > MaxConflictFiles)
         {
-            sb.AppendLine($"... and {conflicts.Count - 5} more conflicts");
+            sb.AppendLine($"... and {conflicts.Count - MaxConflictFiles} more conflicted files");
         }
 
         sb.AppendLine();
-        sb.AppendLine("RESPONSE FORMAT (for each conflict):");
+        sb.AppendLine("Resolve the conflict by producing the merged file content that");
+        sb.AppendLine("preserves both agents' intended changes. If the changes are");
+        sb.AppendLine("fundamentally incompatible, prefer Agent A's changes (merged first)");
+        sb.AppendLine("and note what was lost.");
+        sb.AppendLine();
+        sb.AppendLine("RESPONSE FORMAT (for each conflicted file):");
         sb.AppendLine("---RESOLUTION---");
         sb.AppendLine("file: <relative path>");
         sb.AppendLine("content: <resolved content, no conflict markers>");
         sb.AppendLine("---END_RESOLUTION---");
 
         return sb.ToString();
+    }
+
+    /// <summary>Maximum characters of diff output to include per agent</summary>
+    private const int MaxDiffLength = 2000;
+
+    /// <summary>Maximum number of conflicted files to include in prompt</summary>
+    private const int MaxConflictFiles = 8;
+
+    /// <summary>Maximum characters of file content preview</summary>
+    private const int MaxFilePreviewLength = 1500;
+
+    /// <summary>
+    /// Get the diff for a branch relative to its merge base.
+    /// Returns empty string if the diff cannot be obtained.
+    /// </summary>
+    private string GetBranchDiff(string branchName)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = $"diff {branchName}~1..{branchName} --stat -p",
+                WorkingDirectory = _config.TargetDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+
+            using var process = Process.Start(psi);
+            if (process == null) return "";
+
+            // Read stdout/stderr concurrently before WaitForExit to avoid deadlock
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            process.WaitForExit(10_000);
+
+            return outputTask.Result;
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// Truncate diff output to a maximum length, preserving complete lines.
+    /// </summary>
+    private static string TruncateDiff(string diff, int maxLength)
+    {
+        if (diff.Length <= maxLength) return diff;
+
+        var truncated = diff[..maxLength];
+        var lastNewline = truncated.LastIndexOf('\n');
+        if (lastNewline > 0)
+        {
+            truncated = truncated[..lastNewline];
+        }
+        return truncated + "\n... (diff truncated)";
     }
 
     private ConflictResolution ParseResolution(string aiOutput, List<GitConflict> conflicts)
@@ -300,6 +412,8 @@ public class ConflictInfo
     public string Agent1Branch { get; set; } = string.Empty;
     public string Agent2Id { get; set; } = string.Empty;
     public string Agent2Branch { get; set; } = string.Empty;
+    public string? Agent1TaskDescription { get; set; }
+    public string? Agent2TaskDescription { get; set; }
     public DateTime Timestamp { get; set; }
 }
 

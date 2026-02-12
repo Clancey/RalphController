@@ -579,7 +579,8 @@ public class ConsoleUI : IDisposable
             "Gemini",
             "Cursor",
             "OpenCode",
-            "Ollama"
+            "Ollama",
+            "CopilotSdk"
         };
     }
 
@@ -610,6 +611,28 @@ public class ConsoleUI : IDisposable
                 break;
             case "Ollama":
                 _injectOptions.AddRange(new[] { "llama3.1:8b", "llama3.1:70b", "deepseek-r1:32b", "qwen2.5:72b", "Enter custom..." });
+                break;
+            case "CopilotSdk":
+                try
+                {
+                    await using var sdkClient = new GitHub.Copilot.SDK.CopilotClient();
+                    await sdkClient.StartAsync();
+                    var sdkModels = await sdkClient.ListModelsAsync();
+                    var ids = sdkModels.Select(m => m.Id).Where(id => !string.IsNullOrEmpty(id)).ToList();
+                    if (ids.Count > 0)
+                    {
+                        _injectOptions.AddRange(ids!);
+                    }
+                    else
+                    {
+                        _injectOptions.AddRange(new[] { "gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "claude-sonnet-4.5", "claude-opus-4.5", "claude-opus-4.6", "gemini-2.5-pro" });
+                    }
+                }
+                catch
+                {
+                    _injectOptions.AddRange(new[] { "gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "claude-sonnet-4.5", "claude-opus-4.5", "claude-opus-4.6", "gemini-2.5-pro" });
+                }
+                _injectOptions.Add("Enter custom...");
                 break;
         }
     }

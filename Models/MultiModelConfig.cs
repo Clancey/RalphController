@@ -68,6 +68,7 @@ public class ModelSpec
             AIProvider.Cursor => AIProviderConfig.ForCursor(ExecutablePath, Model),
             AIProvider.OpenCode => AIProviderConfig.ForOpenCode(ExecutablePath, NormalizeOpenCodeModel(Model)),
             AIProvider.Ollama => AIProviderConfig.ForOllama(BaseUrl, Model),
+            AIProvider.CopilotSdk => AIProviderConfig.ForCopilotSdk(Model),
             _ => throw new ArgumentOutOfRangeException(nameof(Provider), $"Unknown provider: {Provider}")
         };
     }
@@ -133,6 +134,7 @@ public class ModelSpec
             "cursor" => AIProvider.Cursor,
             "opencode" => AIProvider.OpenCode,
             "ollama" => AIProvider.Ollama,
+            "copilotsdk" or "copilot-sdk" => AIProvider.CopilotSdk,
             _ => throw new ArgumentException($"Unknown provider: {providerStr}")
         };
 

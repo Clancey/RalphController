@@ -15,6 +15,7 @@ public class LoopController : IDisposable
     private readonly ModelSelector _modelSelector;
     private AIProcess? _currentProcess;
     private OllamaClient? _ollamaClient;
+    private CopilotSdkClient? _copilotSdkClient;
     private CancellationTokenSource? _loopCts;
     private CancellationTokenSource? _iterationSkipCts;
     private TaskCompletionSource? _pauseTcs;
@@ -505,6 +506,51 @@ public class LoopController : IDisposable
                     _ollamaClient = null;
                 }
             }
+            else if (currentProvider == AIProvider.CopilotSdk)
+            {
+                // For CopilotSdk, use CopilotSdkClient with streaming support
+                var model = currentProviderConfig.Arguments ?? "gpt-5";
+                var token = string.IsNullOrEmpty(currentProviderConfig.ExecutablePath) ? null : currentProviderConfig.ExecutablePath;
+
+                _copilotSdkClient = new CopilotSdkClient(_config.TargetDirectory, model, token);
+                _copilotSdkClient.OnOutput += text =>
+                {
+                    ResetActivityTimer();
+                    OnOutput?.Invoke(text);
+                };
+                _copilotSdkClient.OnToolCall += (name, args) =>
+                {
+                    ResetActivityTimer();
+                    OnOutput?.Invoke($"[Tool: {name}]");
+                };
+                _copilotSdkClient.OnToolResult += (name, res) =>
+                {
+                    ResetActivityTimer();
+                    OnOutput?.Invoke($"[Result: {name} completed]");
+                };
+                _copilotSdkClient.OnError += err =>
+                {
+                    ResetActivityTimer();
+                    OnError?.Invoke(err);
+                };
+
+                try
+                {
+                    var sdkResult = await _copilotSdkClient.RunAsync(prompt, iterationToken);
+                    result = new AIResult
+                    {
+                        Success = sdkResult.Success,
+                        ExitCode = sdkResult.Success ? 0 : 1,
+                        Output = sdkResult.Output,
+                        Error = sdkResult.Error
+                    };
+                }
+                finally
+                {
+                    _copilotSdkClient.Dispose();
+                    _copilotSdkClient = null;
+                }
+            }
             else
             {
                 // For other providers, use AIProcess with dynamic config
@@ -984,6 +1030,7 @@ public class LoopController : IDisposable
         _iterationSkipCts?.Dispose();
         _currentProcess?.Dispose();
         _ollamaClient?.Dispose();
+        _copilotSdkClient?.Dispose();
         _pauseTcs?.TrySetCanceled();
 
         GC.SuppressFinalize(this);

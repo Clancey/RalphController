@@ -69,6 +69,20 @@ public record TeamConfig
     public bool DelegateMode { get; init; } = false;
 
     /// <summary>
+    /// Display mode for teams TUI. InProcess renders within the terminal,
+    /// SplitPane opens separate panes (tmux/iTerm2 required).
+    /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public TeamDisplayMode DisplayMode { get; init; } = TeamDisplayMode.InProcess;
+
+    /// <summary>
+    /// Hook commands to run on specific team events.
+    /// Key is the hook name (e.g., "TeammateIdle", "TaskCompleted"),
+    /// value is the shell command to execute.
+    /// </summary>
+    public Dictionary<string, string> Hooks { get; init; } = new();
+
+    /// <summary>
     /// Require all agents to submit plans before implementation.
     /// Individual agents can override this via AgentSpawnConfig.
     /// </summary>
@@ -288,4 +302,16 @@ public enum ConflictResolutionMode
 
     /// <summary>Require manual intervention</summary>
     Manual
+}
+
+/// <summary>
+/// Display mode for teams TUI
+/// </summary>
+public enum TeamDisplayMode
+{
+    /// <summary>All agents rendered within the same terminal (default)</summary>
+    InProcess,
+
+    /// <summary>Each agent gets a separate tmux/iTerm2 pane</summary>
+    SplitPane
 }

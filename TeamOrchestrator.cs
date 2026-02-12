@@ -196,6 +196,8 @@ public class TeamOrchestrator : IDisposable
                 _agentStateTimestamps[agentId] = DateTime.UtcNow;
                 OnAgentUpdate?.Invoke(agent.Statistics);
             };
+            agent.OnIdle += a => RunHookAsync("TeammateIdle", a.AgentId);
+            agent.OnTaskComplete += (task, _) => RunHookAsync("TaskCompleted", task.TaskId);
 
             _agents[agentId] = agent;
             _agentMonitor[agentId] = new AgentMonitorInfo { AgentId = agentId };
@@ -573,6 +575,58 @@ public class TeamOrchestrator : IDisposable
 
             All implementation work must be delegated to your team agents.
             """;
+    }
+
+    /// <summary>
+    /// Run a hook command if configured for the given event.
+    /// Hooks are shell commands defined in TeamConfig.Hooks.
+    /// </summary>
+    private void RunHookAsync(string hookName, string context)
+    {
+        if (!_teamConfig.Hooks.TryGetValue(hookName, out var command))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/bin/sh",
+                    Arguments = $"-c \"{command.Replace("\"", "\\\"")}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    WorkingDirectory = _config.TargetDirectory
+                };
+                psi.Environment["RALPH_HOOK"] = hookName;
+                psi.Environment["RALPH_CONTEXT"] = context;
+                psi.Environment["RALPH_TEAM"] = _teamConfig.TeamName;
+
+                using var process = System.Diagnostics.Process.Start(psi);
+                if (process == null) return;
+
+                var stdoutTask = process.StandardOutput.ReadToEndAsync();
+                var stderrTask = process.StandardError.ReadToEndAsync();
+
+                await process.WaitForExitAsync();
+                var stdout = await stdoutTask;
+                var stderr = await stderrTask;
+
+                if (process.ExitCode != 0)
+                {
+                    OnError?.Invoke($"Hook '{hookName}' failed (exit {process.ExitCode}): {stderr}");
+                }
+                else if (!string.IsNullOrWhiteSpace(stdout))
+                {
+                    OnOutput?.Invoke($"Hook '{hookName}': {stdout.Trim()}");
+                }
+            }
+            catch (Exception ex)
+            {
+                OnError?.Invoke($"Hook '{hookName}' error: {ex.Message}");
+            }
+        });
     }
 
     private void SetState(TeamOrchestratorState newState)

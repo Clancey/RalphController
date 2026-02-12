@@ -89,10 +89,10 @@
 - [?] Team cleanup: remove worktrees, task files, mailbox, team config
 
 ## Low Priority — Polish
-- [ ] Display modes: in-process (default) and split-pane (tmux/iTerm2)
-- [ ] Hooks: `TeammateIdle` and `TaskCompleted` quality gate hooks
-- [ ] Agent crash recovery: partial task re-queued on restart
-- [ ] Max 3 plan revision cycles before lead override/reassign
+- [?] Display modes: in-process (default) and split-pane (tmux/iTerm2)
+- [?] Hooks: `TeammateIdle` and `TaskCompleted` quality gate hooks
+- [?] Agent crash recovery: partial task re-queued on restart
+- [?] Max 3 plan revision cycles before lead override/reassign
 
 ## Bugs/Issues
 - None yet

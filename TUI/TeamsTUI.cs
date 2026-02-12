@@ -192,24 +192,20 @@ public sealed class TeamsTUI : IDisposable
 
         _orchestrator.OnTaskAgentDestroyed += taskAgent =>
         {
-            // Keep in list briefly with stopped state, then schedule removal
             _outputBuffers.Append(taskAgent.AgentId, "TaskAgent completed and destroyed");
-            _ = RemoveTaskAgentAfterDelay(taskAgent.AgentId, TimeSpan.FromSeconds(5));
+            // Remove immediately to prevent accumulation (new agents reuse the slot)
+            lock (_viewLock)
+            {
+                _sortedAgentIds.Remove(taskAgent.AgentId);
+                _agentStats.Remove(taskAgent.AgentId);
+                // Clamp selection index
+                if (_selectedAgentIndex >= _sortedAgentIds.Count && _sortedAgentIds.Count > 0)
+                    _selectedAgentIndex = _sortedAgentIds.Count - 1;
+            }
             RequestRender();
         };
 
         _outputBuffers.OnOutputReceived += _ => RequestRender();
-    }
-
-    private async Task RemoveTaskAgentAfterDelay(string agentId, TimeSpan delay)
-    {
-        await System.Threading.Tasks.Task.Delay(delay);
-        lock (_viewLock)
-        {
-            _sortedAgentIds.Remove(agentId);
-            _agentStats.Remove(agentId);
-        }
-        RequestRender();
     }
 
     // -------------------------------------------------------

@@ -116,7 +116,7 @@ public record TeamConfig
     /// Timeout in seconds for the lead agent to produce a decision.
     /// After this, falls back to sequential next-pending-task.
     /// </summary>
-    public int LeadDecisionTimeoutSeconds { get; init; } = 120;
+    public int LeadDecisionTimeoutSeconds { get; init; } = 300;
 
     /// <summary>
     /// Which sub-agent phases to run for each task.

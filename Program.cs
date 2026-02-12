@@ -1027,29 +1027,49 @@ var savedProvider = freshMode ? null : projectSettings.Provider;
 AIProvider provider;
 var providerWasSelected = false;
 
+// Declare model variables before the selection loop so they persist
+string? claudeModel = null;
+string? codexModel = null;
+string? geminiModel = null;
+string? cursorModel = null;
+string? copilotModel = null;
+string? openCodeModel = null;
+string? ollamaUrl = null;
+string? ollamaModel = null;
+
+// Cache installed providers so detection only happens once
+List<AIProvider>? installedProviders = null;
+
+const string goBackChoice = "\u2190 Go back";
+
+while (true) // Provider + model selection loop (enables "go back" navigation)
+{
 if (providerFromArgs.HasValue)
 {
     // Use command line argument
     provider = providerFromArgs.Value;
 }
-else if (savedProvider.HasValue)
+else if (savedProvider.HasValue && !providerWasSelected)
 {
-    // Use saved provider from project settings
+    // Use saved provider from project settings (skip if user went back)
     provider = savedProvider.Value;
     AnsiConsole.MarkupLine($"[dim]Using saved provider from .ralph.json[/]");
 }
 else
 {
-    // Detect installed providers
-    AnsiConsole.MarkupLine("[dim]Detecting installed providers...[/]");
-    var installedProviders = GetInstalledProviders();
-
-    if (installedProviders.Count == 0)
+    // Detect installed providers (only once)
+    if (installedProviders == null)
     {
-        AnsiConsole.MarkupLine("[red]No AI providers found![/]");
-        AnsiConsole.MarkupLine("[dim]Install one of: claude, codex, copilot, gemini, or opencode CLI tools.[/]");
-        AnsiConsole.MarkupLine("[dim]Or use Ollama/LMStudio which is always available via HTTP API.[/]");
-        installedProviders.Add(AIProvider.Ollama);  // Fallback to Ollama
+        AnsiConsole.MarkupLine("[dim]Detecting installed providers...[/]");
+        installedProviders = GetInstalledProviders();
+
+        if (installedProviders.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[red]No AI providers found![/]");
+            AnsiConsole.MarkupLine("[dim]Install one of: claude, codex, copilot, gemini, or opencode CLI tools.[/]");
+            AnsiConsole.MarkupLine("[dim]Or use Ollama/LMStudio which is always available via HTTP API.[/]");
+            installedProviders.Add(AIProvider.Ollama);  // Fallback to Ollama
+        }
     }
 
     // Prompt for provider
@@ -1063,7 +1083,6 @@ else
 AnsiConsole.MarkupLine($"[green]Provider:[/] {provider}");
 
 // For Claude, handle model selection
-string? claudeModel = null;
 if (provider == AIProvider.Claude)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
@@ -1082,6 +1101,7 @@ if (provider == AIProvider.Claude)
     {
         // Get available models dynamically
         var claudeModels = await GetClaudeModels();
+        if (providerWasSelected) claudeModels.Insert(0, goBackChoice);
         claudeModels.Add("Enter custom model...");
 
         claudeModel = AnsiConsole.Prompt(
@@ -1089,6 +1109,8 @@ if (provider == AIProvider.Claude)
                 .Title("[yellow]Select Claude model:[/]")
                 .PageSize(10)
                 .AddChoices(claudeModels));
+
+        if (claudeModel == goBackChoice) continue;
 
         if (claudeModel == "Enter custom model...")
         {
@@ -1104,7 +1126,6 @@ if (provider == AIProvider.Claude)
 }
 
 // For Codex, handle model selection
-string? codexModel = null;
 if (provider == AIProvider.Codex)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
@@ -1123,6 +1144,7 @@ if (provider == AIProvider.Codex)
     {
         // Get available models dynamically
         var codexModels = await GetCodexModels();
+        if (providerWasSelected) codexModels.Insert(0, goBackChoice);
         codexModels.Add("Enter custom model...");
 
         codexModel = AnsiConsole.Prompt(
@@ -1130,6 +1152,8 @@ if (provider == AIProvider.Codex)
                 .Title("[yellow]Select Codex model:[/]")
                 .PageSize(10)
                 .AddChoices(codexModels));
+
+        if (codexModel == goBackChoice) continue;
 
         if (codexModel == "Enter custom model...")
         {
@@ -1145,7 +1169,6 @@ if (provider == AIProvider.Codex)
 }
 
 // For Gemini, handle model selection
-string? geminiModel = null;
 if (provider == AIProvider.Gemini)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
@@ -1164,6 +1187,7 @@ if (provider == AIProvider.Gemini)
     {
         // Get available models dynamically
         var geminiModels = await GetGeminiModels();
+        if (providerWasSelected) geminiModels.Insert(0, goBackChoice);
         geminiModels.Add("Enter custom model...");
 
         geminiModel = AnsiConsole.Prompt(
@@ -1171,6 +1195,8 @@ if (provider == AIProvider.Gemini)
                 .Title("[yellow]Select Gemini model:[/]")
                 .PageSize(10)
                 .AddChoices(geminiModels));
+
+        if (geminiModel == goBackChoice) continue;
 
         if (geminiModel == "Enter custom model...")
         {
@@ -1186,7 +1212,6 @@ if (provider == AIProvider.Gemini)
 }
 
 // For Cursor, handle model selection
-string? cursorModel = null;
 if (provider == AIProvider.Cursor)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
@@ -1205,6 +1230,7 @@ if (provider == AIProvider.Cursor)
     {
         // Get available models dynamically
         var cursorModels = await GetCursorModels();
+        if (providerWasSelected) cursorModels.Insert(0, goBackChoice);
         cursorModels.Add("Enter custom model...");
 
         cursorModel = AnsiConsole.Prompt(
@@ -1212,6 +1238,8 @@ if (provider == AIProvider.Cursor)
                 .Title("[yellow]Select Cursor model:[/]")
                 .PageSize(10)
                 .AddChoices(cursorModels));
+
+        if (cursorModel == goBackChoice) continue;
 
         if (cursorModel == "Enter custom model...")
         {
@@ -1227,7 +1255,6 @@ if (provider == AIProvider.Cursor)
 }
 
 // For Copilot, handle model selection
-string? copilotModel = null;
 if (provider == AIProvider.Copilot)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
@@ -1245,19 +1272,27 @@ if (provider == AIProvider.Copilot)
     else
     {
         // Prompt for model
+        var copilotModels = new List<string>();
+        if (providerWasSelected) copilotModels.Add(goBackChoice);
+        copilotModels.AddRange(new[]
+        {
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5.1",
+            "gpt-5.1-codex",
+            "gpt-5.1-codex-mini",
+            "gpt-5.2",
+            "claude-sonnet-4",
+            "claude-sonnet-4.5",
+            "claude-opus-4.5"
+        });
+
         copilotModel = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
                 .Title("[yellow]Select Copilot model:[/]")
-                .AddChoices(
-                    "gpt-5",
-                    "gpt-5-mini",
-                    "gpt-5.1",
-                    "gpt-5.1-codex",
-                    "gpt-5.1-codex-mini",
-                    "gpt-5.2",
-                    "claude-sonnet-4",
-                    "claude-sonnet-4.5",
-                    "claude-opus-4.5"));
+                .AddChoices(copilotModels));
+
+        if (copilotModel == goBackChoice) continue;
 
         projectSettings.CopilotModel = copilotModel;
     }
@@ -1266,7 +1301,6 @@ if (provider == AIProvider.Copilot)
 }
 
 // For OpenCode, handle model selection
-string? openCodeModel = null;
 if (provider == AIProvider.OpenCode)
 {
     if (!string.IsNullOrEmpty(modelFromArgs))
@@ -1291,11 +1325,17 @@ if (provider == AIProvider.OpenCode)
         var models = await GetOpenCodeModels();
 
         // Prompt for model selection
-        var allChoices = models.Concat(new[] { "Enter custom model..." }).ToList();
+        var allChoices = new List<string>();
+        if (providerWasSelected) allChoices.Add(goBackChoice);
+        allChoices.AddRange(models);
+        allChoices.Add("Enter custom model...");
+
         var modelInput = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
                 .Title("[yellow]Select OpenCode model:[/]")
                 .AddChoices(allChoices));
+
+        if (modelInput == goBackChoice) continue;
 
         if (modelInput == "Enter custom model...")
         {
@@ -1316,128 +1356,156 @@ if (provider == AIProvider.OpenCode)
 }
 
 // For Ollama/LMStudio, handle URL and model selection
-string? ollamaUrl = null;
-string? ollamaModel = null;
 if (provider == AIProvider.Ollama)
 {
-    // Handle URL: command line > project settings > global cache > prompt
-    if (!string.IsNullOrEmpty(apiUrlFromArgs))
+    var ollamaConfigDone = false;
+    while (!ollamaConfigDone) // Inner loop for Ollama URL + model back navigation
     {
-        ollamaUrl = apiUrlFromArgs;
-        projectSettings.OllamaUrl = ollamaUrl;
-        globalSettings.LastOllamaUrl = ollamaUrl;
-    }
-    else if (!freshMode && !string.IsNullOrEmpty(projectSettings.OllamaUrl))
-    {
-        ollamaUrl = projectSettings.OllamaUrl;
-        AnsiConsole.MarkupLine($"[dim]Using saved API URL: {ollamaUrl}[/]");
-    }
-    else
-    {
-        // Build choices - include last used URL if available
-        var urlChoices = new List<string>();
-
-        // Add last used URL from global cache if available
-        if (!string.IsNullOrEmpty(globalSettings.LastOllamaUrl))
+        // Handle URL: command line > project settings > global cache > prompt
+        if (!string.IsNullOrEmpty(apiUrlFromArgs))
         {
-            urlChoices.Add($"{globalSettings.LastOllamaUrl} (last used)");
+            ollamaUrl = apiUrlFromArgs;
+            projectSettings.OllamaUrl = ollamaUrl;
+            globalSettings.LastOllamaUrl = ollamaUrl;
         }
-
-        // Add standard options (only if not already the last used)
-        if (globalSettings.LastOllamaUrl != "http://localhost:11434")
-            urlChoices.Add("http://localhost:11434 (Ollama local)");
-        if (globalSettings.LastOllamaUrl != "http://127.0.0.1:1234")
-            urlChoices.Add("http://127.0.0.1:1234 (LMStudio)");
-        urlChoices.Add("Enter custom URL...");
-
-        ollamaUrl = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[yellow]Select API endpoint:[/]")
-                .AddChoices(urlChoices));
-
-        if (ollamaUrl == "Enter custom URL...")
+        else if (!freshMode && !string.IsNullOrEmpty(projectSettings.OllamaUrl))
         {
-            var defaultUrl = globalSettings.LastOllamaUrl ?? "http://localhost:11434";
-            ollamaUrl = AnsiConsole.Prompt(
-                new TextPrompt<string>("[yellow]Enter API URL:[/]")
-                    .DefaultValue(defaultUrl));
+            ollamaUrl = projectSettings.OllamaUrl;
+            AnsiConsole.MarkupLine($"[dim]Using saved API URL: {ollamaUrl}[/]");
         }
         else
         {
-            // Extract just the URL part (remove description in parentheses)
-            ollamaUrl = ollamaUrl.Split(' ')[0];
-        }
+            // Build choices - include last used URL if available
+            var urlChoices = new List<string>();
 
-        projectSettings.OllamaUrl = ollamaUrl;
-        globalSettings.LastOllamaUrl = ollamaUrl;
-    }
+            if (providerWasSelected) urlChoices.Add(goBackChoice);
 
-    AnsiConsole.MarkupLine($"[green]API URL:[/] {ollamaUrl}");
-
-    // Handle model: command line > project settings > global cache > prompt
-    if (!string.IsNullOrEmpty(modelFromArgs))
-    {
-        ollamaModel = modelFromArgs;
-        projectSettings.OllamaModel = ollamaModel;
-        globalSettings.LastOllamaModel = ollamaModel;
-    }
-    else if (!freshMode && !string.IsNullOrEmpty(projectSettings.OllamaModel))
-    {
-        ollamaModel = projectSettings.OllamaModel;
-        AnsiConsole.MarkupLine($"[dim]Using saved model: {ollamaModel}[/]");
-    }
-    else
-    {
-        // Query server for available models
-        var availableModels = await GetOllamaModels(ollamaUrl!);
-
-        if (availableModels.Count > 0)
-        {
-            // If we have a last used model from global cache, put it first
-            if (!string.IsNullOrEmpty(globalSettings.LastOllamaModel) &&
-                availableModels.Contains(globalSettings.LastOllamaModel))
+            // Add last used URL from global cache if available
+            if (!string.IsNullOrEmpty(globalSettings.LastOllamaUrl))
             {
-                availableModels.Remove(globalSettings.LastOllamaModel);
-                availableModels.Insert(0, $"{globalSettings.LastOllamaModel} (last used)");
+                urlChoices.Add($"{globalSettings.LastOllamaUrl} (last used)");
             }
 
-            // Add custom option at the end
-            availableModels.Add("Enter custom model...");
+            // Add standard options (only if not already the last used)
+            if (globalSettings.LastOllamaUrl != "http://localhost:11434")
+                urlChoices.Add("http://localhost:11434 (Ollama local)");
+            if (globalSettings.LastOllamaUrl != "http://127.0.0.1:1234")
+                urlChoices.Add("http://127.0.0.1:1234 (LMStudio)");
+            urlChoices.Add("Enter custom URL...");
 
-            ollamaModel = AnsiConsole.Prompt(
+            ollamaUrl = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
-                    .Title($"[yellow]Select model ({availableModels.Count - 1} available):[/]")
-                    .PageSize(15)
-                    .AddChoices(availableModels));
+                    .Title("[yellow]Select API endpoint:[/]")
+                    .AddChoices(urlChoices));
 
-            if (ollamaModel == "Enter custom model...")
+            if (ollamaUrl == goBackChoice)
             {
+                break; // Break inner loop; continue in outer loop re-prompts provider
+            }
+
+            if (ollamaUrl == "Enter custom URL...")
+            {
+                var defaultUrl = globalSettings.LastOllamaUrl ?? "http://localhost:11434";
+                ollamaUrl = AnsiConsole.Prompt(
+                    new TextPrompt<string>("[yellow]Enter API URL:[/]")
+                        .DefaultValue(defaultUrl));
+            }
+            else
+            {
+                // Extract just the URL part (remove description in parentheses)
+                ollamaUrl = ollamaUrl.Split(' ')[0];
+            }
+
+            projectSettings.OllamaUrl = ollamaUrl;
+            globalSettings.LastOllamaUrl = ollamaUrl;
+        }
+
+        AnsiConsole.MarkupLine($"[green]API URL:[/] {ollamaUrl}");
+
+        // Handle model: command line > project settings > global cache > prompt
+        if (!string.IsNullOrEmpty(modelFromArgs))
+        {
+            ollamaModel = modelFromArgs;
+            projectSettings.OllamaModel = ollamaModel;
+            globalSettings.LastOllamaModel = ollamaModel;
+        }
+        else if (!freshMode && !string.IsNullOrEmpty(projectSettings.OllamaModel))
+        {
+            ollamaModel = projectSettings.OllamaModel;
+            AnsiConsole.MarkupLine($"[dim]Using saved model: {ollamaModel}[/]");
+        }
+        else
+        {
+            // Query server for available models
+            var availableModels = await GetOllamaModels(ollamaUrl!);
+
+            if (availableModels.Count > 0)
+            {
+                // If we have a last used model from global cache, put it first
+                if (!string.IsNullOrEmpty(globalSettings.LastOllamaModel) &&
+                    availableModels.Contains(globalSettings.LastOllamaModel))
+                {
+                    availableModels.Remove(globalSettings.LastOllamaModel);
+                    availableModels.Insert(0, $"{globalSettings.LastOllamaModel} (last used)");
+                }
+
+                // Add go back and custom options
+                availableModels.Insert(0, goBackChoice);
+                availableModels.Add("Enter custom model...");
+
+                ollamaModel = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title($"[yellow]Select model ({availableModels.Count - 2} available):[/]")
+                        .PageSize(15)
+                        .AddChoices(availableModels));
+
+                if (ollamaModel == goBackChoice)
+                {
+                    ollamaUrl = null; // Reset URL so it re-prompts
+                    continue; // Re-prompt URL in inner loop
+                }
+
+                if (ollamaModel == "Enter custom model...")
+                {
+                    var defaultModel = globalSettings.LastOllamaModel ?? "llama3.1:8b";
+                    ollamaModel = AnsiConsole.Prompt(
+                        new TextPrompt<string>("[yellow]Enter model name:[/]")
+                            .DefaultValue(defaultModel));
+                }
+                else if (ollamaModel.EndsWith(" (last used)"))
+                {
+                    // Strip the suffix
+                    ollamaModel = ollamaModel.Replace(" (last used)", "");
+                }
+            }
+            else
+            {
+                // Fallback to manual entry if server query failed
                 var defaultModel = globalSettings.LastOllamaModel ?? "llama3.1:8b";
                 ollamaModel = AnsiConsole.Prompt(
-                    new TextPrompt<string>("[yellow]Enter model name:[/]")
+                    new TextPrompt<string>("[yellow]Enter model name (or 'back' to go back):[/]")
                         .DefaultValue(defaultModel));
+
+                if (ollamaModel.Equals("back", StringComparison.OrdinalIgnoreCase))
+                {
+                    ollamaUrl = null;
+                    continue; // Re-prompt URL in inner loop
+                }
             }
-            else if (ollamaModel.EndsWith(" (last used)"))
-            {
-                // Strip the suffix
-                ollamaModel = ollamaModel.Replace(" (last used)", "");
-            }
-        }
-        else
-        {
-            // Fallback to manual entry if server query failed
-            var defaultModel = globalSettings.LastOllamaModel ?? "llama3.1:8b";
-            ollamaModel = AnsiConsole.Prompt(
-                new TextPrompt<string>("[yellow]Enter model name:[/]")
-                    .DefaultValue(defaultModel));
+
+            projectSettings.OllamaModel = ollamaModel;
+            globalSettings.LastOllamaModel = ollamaModel;
         }
 
-        projectSettings.OllamaModel = ollamaModel;
-        globalSettings.LastOllamaModel = ollamaModel;
+        AnsiConsole.MarkupLine($"[green]Model:[/] {ollamaModel}");
+        ollamaConfigDone = true;
     }
 
-    AnsiConsole.MarkupLine($"[green]Model:[/] {ollamaModel}");
+    if (!ollamaConfigDone) continue; // "Go back" at URL level -> re-prompt provider
 }
+
+break; // Provider and model successfully selected
+} // end while (provider + model selection loop)
 
 // Ask about multi-model configuration (only if never configured, or --fresh mode)
 MultiModelConfig? multiModelConfig = null;
@@ -1591,144 +1659,214 @@ if (teamsMode && !freshMode && projectSettings.Teams?.IsEnabled == true)
 }
 else if (teamsMode)
 {
-    // Teams mode from CLI flag - prompt for configuration
+    // Teams mode from CLI flag - prompt for configuration with back navigation
     AnsiConsole.MarkupLine("\n[blue]Teams Mode Configuration[/]");
 
-    // Number of agents
-    var agentCount = AnsiConsole.Prompt(
-        new TextPrompt<int>("[yellow]Number of sub-agents (2-8):[/]")
-            .DefaultValue(3)
-            .Validate(n => n >= 2 && n <= 8 ? ValidationResult.Success() : ValidationResult.Error("Must be 2-8")));
-
-    // Lead agent model
-    AnsiConsole.MarkupLine("\n[yellow]Select lead agent model:[/]");
-    var leadModel = await PromptForModelSpec("Lead Agent", ollamaUrl);
-    if (leadModel == null)
-    {
-        // Use current provider as lead
-        var currentModelName = provider switch
-        {
-            AIProvider.Claude => claudeModel ?? "sonnet",
-            AIProvider.Codex => codexModel ?? "o3",
-            AIProvider.Copilot => copilotModel ?? "gpt-5",
-            AIProvider.Gemini => geminiModel ?? "gemini-2.5-pro",
-            AIProvider.Cursor => cursorModel ?? "claude-sonnet",
-            AIProvider.OpenCode => openCodeModel ?? "",
-            AIProvider.Ollama => ollamaModel ?? "llama3.1:8b",
-            _ => ""
-        };
-        leadModel = new ModelSpec
-        {
-            Provider = provider,
-            Model = currentModelName,
-            BaseUrl = provider == AIProvider.Ollama ? ollamaUrl : null,
-            Label = currentModelName
-        };
-    }
-
-    // Sub-agent model assignment
-    var assignmentChoice = AnsiConsole.Prompt(
-        new SelectionPrompt<string>()
-            .Title("[yellow]Sub-agent model assignment:[/]")
-            .AddChoices(
-                "Same as lead (default)",
-                "Pick for each agent",
-                "Round-robin from list"));
-
+    // Step-based wizard state
+    var agentCount = 3;
+    ModelSpec? leadModel = null;
+    var assignmentChoice = "";
     var modelAssignment = AgentModelAssignment.SameAsLead;
     var agentModels = new List<ModelSpec>();
+    var decomposition = DecompositionStrategy.AIDecomposed;
+    var mergeStrategy = MergeStrategy.Sequential;
+    var leadDriven = false;
+    string? verifyCommand = null;
 
-    if (assignmentChoice.StartsWith("Pick"))
+    var teamStep = 0;
+    while (teamStep < 6) // Steps: 0=agents, 1=lead, 2=assignment, 3=decomposition, 4=merge, 5=mode
     {
-        modelAssignment = AgentModelAssignment.PerAgent;
-        for (int i = 0; i < agentCount; i++)
+        switch (teamStep)
         {
-            AnsiConsole.MarkupLine($"\n[yellow]Select model for Agent {i + 1}:[/]");
-            var agentModel = await PromptForModelSpec($"Agent {i + 1}", ollamaUrl);
-            agentModels.Add(agentModel ?? leadModel);
-        }
-    }
-    else if (assignmentChoice.StartsWith("Round"))
-    {
-        modelAssignment = AgentModelAssignment.RoundRobin;
-        agentModels.Add(leadModel);
-        var addMore = true;
-        var modelIndex = 2;
-        while (addMore)
-        {
-            AnsiConsole.MarkupLine($"\n[yellow]Add model #{modelIndex} for rotation:[/]");
-            var nextModel = await PromptForModelSpec($"Model {modelIndex}", ollamaUrl);
-            if (nextModel != null)
+            case 0: // Number of agents
+                agentCount = AnsiConsole.Prompt(
+                    new TextPrompt<int>("[yellow]Number of sub-agents (2-8):[/]")
+                        .DefaultValue(3)
+                        .Validate(n => n >= 2 && n <= 8 ? ValidationResult.Success() : ValidationResult.Error("Must be 2-8")));
+                teamStep++;
+                break;
+
+            case 1: // Lead agent model
+                AnsiConsole.MarkupLine("\n[yellow]Select lead agent model:[/]");
+                leadModel = await PromptForModelSpec("Lead Agent", ollamaUrl);
+                if (leadModel == null)
+                {
+                    // Use current provider as lead
+                    var currentModelName = provider switch
+                    {
+                        AIProvider.Claude => claudeModel ?? "sonnet",
+                        AIProvider.Codex => codexModel ?? "o3",
+                        AIProvider.Copilot => copilotModel ?? "gpt-5",
+                        AIProvider.Gemini => geminiModel ?? "gemini-2.5-pro",
+                        AIProvider.Cursor => cursorModel ?? "claude-sonnet",
+                        AIProvider.OpenCode => openCodeModel ?? "",
+                        AIProvider.Ollama => ollamaModel ?? "llama3.1:8b",
+                        _ => ""
+                    };
+                    leadModel = new ModelSpec
+                    {
+                        Provider = provider,
+                        Model = currentModelName,
+                        BaseUrl = provider == AIProvider.Ollama ? ollamaUrl : null,
+                        Label = currentModelName
+                    };
+                }
+                teamStep++;
+                break;
+
+            case 2: // Sub-agent model assignment
             {
-                agentModels.Add(nextModel);
-                modelIndex++;
-            }
-            if (agentModels.Count > 1)
-            {
-                addMore = AnsiConsole.Confirm("[yellow]Add another model?[/]", false);
-            }
-            else
-            {
+                var assignmentChoices = new List<string>
+                {
+                    goBackChoice,
+                    "Same as lead (default)",
+                    "Pick for each agent",
+                    "Round-robin from list"
+                };
+
+                assignmentChoice = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("[yellow]Sub-agent model assignment:[/]")
+                        .AddChoices(assignmentChoices));
+
+                if (assignmentChoice == goBackChoice) { teamStep--; break; }
+
+                modelAssignment = AgentModelAssignment.SameAsLead;
+                agentModels = new List<ModelSpec>();
+
+                if (assignmentChoice.StartsWith("Pick"))
+                {
+                    modelAssignment = AgentModelAssignment.PerAgent;
+                    for (int i = 0; i < agentCount; i++)
+                    {
+                        AnsiConsole.MarkupLine($"\n[yellow]Select model for Agent {i + 1}:[/]");
+                        var agentModel = await PromptForModelSpec($"Agent {i + 1}", ollamaUrl);
+                        agentModels.Add(agentModel ?? leadModel!);
+                    }
+                }
+                else if (assignmentChoice.StartsWith("Round"))
+                {
+                    modelAssignment = AgentModelAssignment.RoundRobin;
+                    agentModels.Add(leadModel!);
+                    var addMore = true;
+                    var modelIndex = 2;
+                    while (addMore)
+                    {
+                        AnsiConsole.MarkupLine($"\n[yellow]Add model #{modelIndex} for rotation:[/]");
+                        var nextModel = await PromptForModelSpec($"Model {modelIndex}", ollamaUrl);
+                        if (nextModel != null)
+                        {
+                            agentModels.Add(nextModel);
+                            modelIndex++;
+                        }
+                        if (agentModels.Count > 1)
+                        {
+                            addMore = AnsiConsole.Confirm("[yellow]Add another model?[/]", false);
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                teamStep++;
                 break;
             }
-        }
-    }
 
-    // Decomposition strategy
-    var decompChoice = AnsiConsole.Prompt(
-        new SelectionPrompt<string>()
-            .Title("[yellow]Task decomposition strategy:[/]")
-            .AddChoices(
-                "AI decomposed (lead agent breaks down tasks)",
-                "From implementation_plan.md"));
+            case 3: // Decomposition strategy
+            {
+                var decompChoices = new List<string>
+                {
+                    goBackChoice,
+                    "AI decomposed (lead agent breaks down tasks)",
+                    "From implementation_plan.md"
+                };
 
-    var decomposition = decompChoice.StartsWith("AI")
-        ? DecompositionStrategy.AIDecomposed
-        : DecompositionStrategy.FromPlan;
+                var decompChoice = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("[yellow]Task decomposition strategy:[/]")
+                        .AddChoices(decompChoices));
 
-    // Merge strategy
-    var mergeChoice = AnsiConsole.Prompt(
-        new SelectionPrompt<string>()
-            .Title("[yellow]Merge strategy:[/]")
-            .AddChoices(
-                "Sequential (safest)",
-                "Rebase then merge",
-                "Direct merge"));
+                if (decompChoice == goBackChoice) { teamStep--; break; }
 
-    var mergeStrategy = mergeChoice switch
-    {
-        var s when s.StartsWith("Rebase") => MergeStrategy.RebaseThenMerge,
-        var s when s.StartsWith("Direct") => MergeStrategy.MergeDirect,
-        _ => MergeStrategy.Sequential
-    };
+                decomposition = decompChoice.StartsWith("AI")
+                    ? DecompositionStrategy.AIDecomposed
+                    : DecompositionStrategy.FromPlan;
 
-    // Execution mode: lead-driven (sequential, 3-tier) vs parallel
-    var modeChoice = AnsiConsole.Prompt(
-        new SelectionPrompt<string>()
-            .Title("[yellow]Execution mode:[/]")
-            .AddChoices(
-                "Parallel (agents run concurrently)",
-                "Lead-driven (sequential, 3-tier: Plan/Code/Verify)"));
+                teamStep++;
+                break;
+            }
 
-    var leadDriven = modeChoice.StartsWith("Lead");
+            case 4: // Merge strategy
+            {
+                var mergeChoices = new List<string>
+                {
+                    goBackChoice,
+                    "Sequential (safest)",
+                    "Rebase then merge",
+                    "Direct merge"
+                };
 
-    // Verify command (only for lead-driven mode)
-    string? verifyCommand = null;
-    if (leadDriven)
-    {
-        var wantsVerify = AnsiConsole.Confirm("[yellow]Add a verify command (e.g., dotnet build)?[/]", false);
-        if (wantsVerify)
-        {
-            verifyCommand = AnsiConsole.Prompt(
-                new TextPrompt<string>("[yellow]Verify command:[/]")
-                    .DefaultValue("dotnet build"));
+                var mergeChoice = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("[yellow]Merge strategy:[/]")
+                        .AddChoices(mergeChoices));
+
+                if (mergeChoice == goBackChoice) { teamStep--; break; }
+
+                mergeStrategy = mergeChoice switch
+                {
+                    var s when s.StartsWith("Rebase") => MergeStrategy.RebaseThenMerge,
+                    var s when s.StartsWith("Direct") => MergeStrategy.MergeDirect,
+                    _ => MergeStrategy.Sequential
+                };
+
+                teamStep++;
+                break;
+            }
+
+            case 5: // Execution mode
+            {
+                var modeChoices = new List<string>
+                {
+                    goBackChoice,
+                    "Parallel (agents run concurrently)",
+                    "Lead-driven (sequential, 3-tier: Plan/Code/Verify)"
+                };
+
+                var modeChoice = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("[yellow]Execution mode:[/]")
+                        .AddChoices(modeChoices));
+
+                if (modeChoice == goBackChoice) { teamStep--; break; }
+
+                leadDriven = modeChoice.StartsWith("Lead");
+
+                // Verify command (only for lead-driven mode)
+                verifyCommand = null;
+                if (leadDriven)
+                {
+                    var wantsVerify = AnsiConsole.Confirm("[yellow]Add a verify command (e.g., dotnet build)?[/]", false);
+                    if (wantsVerify)
+                    {
+                        verifyCommand = AnsiConsole.Prompt(
+                            new TextPrompt<string>("[yellow]Verify command:[/]")
+                                .DefaultValue("dotnet build"));
+                    }
+                }
+
+                teamStep++;
+                break;
+            }
         }
     }
 
     teamConfig = new TeamConfig
     {
         AgentCount = agentCount,
-        LeadModel = leadModel,
+        LeadModel = leadModel!,
         AgentModels = agentModels,
         ModelAssignment = modelAssignment,
         DecompositionStrategy = decomposition,
@@ -1743,13 +1881,13 @@ else if (teamsMode)
     // Display summary
     var teamModelNames = modelAssignment switch
     {
-        AgentModelAssignment.SameAsLead => $"All: {leadModel.DisplayName}",
+        AgentModelAssignment.SameAsLead => $"All: {leadModel!.DisplayName}",
         AgentModelAssignment.PerAgent => string.Join(", ", agentModels.Select(m => m.DisplayName)),
-        AgentModelAssignment.RoundRobin => string.Join(" → ", agentModels.Select(m => m.DisplayName)),
-        _ => leadModel.DisplayName
+        AgentModelAssignment.RoundRobin => string.Join(" \u2192 ", agentModels.Select(m => m.DisplayName)),
+        _ => leadModel!.DisplayName
     };
     var modeLabel = leadDriven ? "Lead-driven (sequential)" : "Parallel";
-    AnsiConsole.MarkupLine($"[green]Teams:[/] {agentCount} agents, Lead: {Markup.Escape(leadModel.DisplayName)}, Sub-agents: {Markup.Escape(teamModelNames)}");
+    AnsiConsole.MarkupLine($"[green]Teams:[/] {agentCount} agents, Lead: {Markup.Escape(leadModel!.DisplayName)}, Sub-agents: {Markup.Escape(teamModelNames)}");
     AnsiConsole.MarkupLine($"[green]Mode:[/] {modeLabel}, Strategy: {decomposition}, Merge: {mergeStrategy}");
     if (!string.IsNullOrEmpty(verifyCommand))
         AnsiConsole.MarkupLine($"[green]Verify:[/] {Markup.Escape(verifyCommand)}");

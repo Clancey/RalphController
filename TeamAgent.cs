@@ -664,20 +664,22 @@ public class TeamAgent : IDisposable
                 };
             }
 
+            var commitMessage = CurrentTask?.Title ?? CurrentTask?.Description ?? _agentId;
+
             MergeResult result;
             switch (_teamConfig.MergeStrategy)
             {
                 case MergeStrategy.RebaseThenMerge:
                     result = await _mergeManager.RebaseAndMergeAsync(
-                        _worktreePath, _branchName, targetBranch, cancellationToken);
+                        _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage);
                     break;
                 case MergeStrategy.MergeDirect:
                     result = await _mergeManager.MergeDirectAsync(
-                        _worktreePath, _branchName, targetBranch, cancellationToken);
+                        _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage);
                     break;
                 default:
                     result = await _mergeManager.SequentialMergeAsync(
-                        _worktreePath, _branchName, targetBranch, cancellationToken);
+                        _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage);
                     break;
             }
 

@@ -80,6 +80,20 @@ public class TeamOrchestrator : IDisposable
 
         try
         {
+            // In lead-driven mode, show the lead agent in the TUI immediately
+            // so the user sees something happening during decomposition.
+            if (_teamConfig.LeadDriven)
+            {
+                var modelLabel = _teamConfig.LeadModel?.DisplayName ?? _config.Provider.ToString();
+                OnAgentUpdate?.Invoke(new AgentStatistics
+                {
+                    AgentId = "lead",
+                    Name = $"Lead [{modelLabel}]",
+                    State = AgentState.PlanningWork
+                });
+                OnOutput?.Invoke("Lead agent initializing, reading implementation plan...");
+            }
+
             var tasks = await DecomposeAsync(_stopCts.Token);
             if (tasks.Count == 0)
             {

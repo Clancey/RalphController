@@ -108,8 +108,8 @@ public record AIProviderConfig
         Arguments = string.IsNullOrWhiteSpace(model)
             ? "run --format json"
             : $"run --format json --model {model}",
-        UsesStdin = false,
-        UsesPromptArgument = true
+        UsesStdin = true,
+        UsesPromptArgument = false
     };
 
     public static AIProviderConfig ForGemini(string? executablePath = null, string? model = null) => new()

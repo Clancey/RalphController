@@ -30,6 +30,10 @@ public class LeadAgent : IDisposable
     private readonly ConcurrentDictionary<string, RunningTaskAgent> _runningAgents = new();
     private int _agentModelIndex;
 
+    // Backoff: if agents fail very quickly, throttle spawning to prevent churn
+    private DateTime _lastAgentFailure = DateTime.MinValue;
+    private static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(3);
+
     /// <summary>Current state of the lead agent</summary>
     public AgentState State { get; private set; } = AgentState.Idle;
 
@@ -91,6 +95,15 @@ public class LeadAgent : IDisposable
                 // Reap any completed agents first
                 await ReapCompletedAgentsAsync(cancellationToken);
 
+                // Backoff after rapid failures to prevent agent churn
+                var timeSinceFailure = DateTime.UtcNow - _lastAgentFailure;
+                if (timeSinceFailure < FailureBackoff)
+                {
+                    var waitTime = FailureBackoff - timeSinceFailure;
+                    OnOutput?.Invoke($"Backoff: waiting {waitTime.TotalSeconds:F0}s after agent failure...");
+                    await Task.Delay(waitTime, cancellationToken);
+                }
+
                 var stats = _taskStore.GetStatistics();
                 OnQueueUpdate?.Invoke(stats);
 
@@ -111,28 +124,65 @@ public class LeadAgent : IDisposable
                     continue;
                 }
 
-                // We have capacity — get the lead's decision
-                SetState(AgentState.Deciding);
-                OnOutput?.Invoke($"Analyzing project state ({stats.Pending} pending, {stats.Completed} done, {_runningAgents.Count} running)...");
-                var decision = await GetNextDecisionAsync(cancellationToken);
+                // Fast-path: if there are claimable tasks and free slots, skip the AI
+                // entirely and just pick the highest-priority pending task.
+                // Only consult the AI for complex decisions (retries, skips, all tasks done).
+                var claimable = _taskStore.GetClaimable();
+                LeadDecision? decision;
 
-                if (decision == null)
+                if (claimable.Count > 0)
                 {
-                    _consecutiveParseFailures++;
-                    if (_consecutiveParseFailures >= MaxParseFailures)
+                    var next = claimable.OrderBy(t => t.Priority).First();
+                    decision = new LeadDecision
                     {
-                        OnOutput?.Invoke($"Failed to parse decision {MaxParseFailures}x, falling back to sequential");
-                        decision = CreateFallbackDecision();
+                        Action = LeadAction.NextTask,
+                        TaskId = next.TaskId,
+                        Reason = $"Next highest-priority pending task"
+                    };
+                    OnOutput?.Invoke($"Fast-assigning task {next.TaskId}: {next.Title ?? next.Description}");
+                    _consecutiveParseFailures = 0;
+                }
+                else if (stats.Failed > 0)
+                {
+                    // Complex decision needed (retries, skips) — ask the AI
+                    SetState(AgentState.Deciding);
+                    OnOutput?.Invoke($"Analyzing project state ({stats.Pending} pending, {stats.Completed} done, {stats.Failed} failed, {_runningAgents.Count} running)...");
+                    decision = await GetNextDecisionAsync(cancellationToken);
+
+                    if (decision == null)
+                    {
+                        _consecutiveParseFailures++;
+                        if (_consecutiveParseFailures >= MaxParseFailures)
+                        {
+                            OnOutput?.Invoke($"Failed to parse decision {MaxParseFailures}x, falling back to sequential");
+                            decision = CreateFallbackDecision();
+                        }
+                        else
+                        {
+                            OnError?.Invoke("Failed to parse lead decision, retrying...");
+                            continue;
+                        }
                     }
                     else
                     {
-                        OnError?.Invoke("Failed to parse lead decision, retrying...");
-                        continue;
+                        _consecutiveParseFailures = 0;
                     }
                 }
                 else
                 {
-                    _consecutiveParseFailures = 0;
+                    // No claimable, no failed — agents still running, wait
+                    if (_runningAgents.Count > 0)
+                    {
+                        OnOutput?.Invoke($"No pending tasks, waiting for {_runningAgents.Count} running agent(s)...");
+                        await WaitForAnyAgentCompletionAsync(cancellationToken);
+                        continue;
+                    }
+                    // Nothing left — declare complete
+                    decision = new LeadDecision
+                    {
+                        Action = LeadAction.DeclareComplete,
+                        Reason = "All tasks resolved"
+                    };
                 }
 
                 if (decision == null)
@@ -196,11 +246,16 @@ public class LeadAgent : IDisposable
                 // Get the result (task is already completed, this won't block)
                 var result = await running.BackgroundTask;
                 await HandleTaskAgentCompletion(running.TaskAgent, running.TaskId, result, ct);
+
+                // Track fast failures for backoff
+                if (!result.Success)
+                    _lastAgentFailure = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
                 OnError?.Invoke($"Error reaping agent {id}: {ex.Message}");
                 _taskStore.Fail(running.TaskId, ex.Message);
+                _lastAgentFailure = DateTime.UtcNow;
             }
             finally
             {
@@ -292,7 +347,7 @@ public class LeadAgent : IDisposable
 
     private async Task<LeadDecision?> GetNextDecisionAsync(CancellationToken ct)
     {
-        OnOutput?.Invoke("Running AI to decide next task...");
+        OnOutput?.Invoke("Running AI for decision on failed tasks...");
 
         var prompt = BuildDecisionPrompt();
         var providerConfig = GetProviderConfig();
@@ -300,16 +355,26 @@ public class LeadAgent : IDisposable
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(_teamConfig.LeadDecisionTimeoutSeconds));
 
-        var result = await AIProcessRunner.RunAsync(
-            providerConfig,
-            prompt,
-            _config.TargetDirectory,
-            output =>
-            {
-                Statistics.LastActivityAt = DateTime.UtcNow;
-                OnOutput?.Invoke(output);
-            },
-            timeoutCts.Token);
+        AgentProcessResult result;
+        try
+        {
+            result = await AIProcessRunner.RunAsync(
+                providerConfig,
+                prompt,
+                _config.TargetDirectory,
+                output =>
+                {
+                    Statistics.LastActivityAt = DateTime.UtcNow;
+                    OnOutput?.Invoke(output);
+                },
+                timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Timeout — not the outer cancel. Don't count as parse failure.
+            OnError?.Invoke($"Lead AI timed out after {_teamConfig.LeadDecisionTimeoutSeconds}s, using fallback");
+            return CreateFallbackDecision();
+        }
 
         Statistics.OutputChars += result.OutputChars;
         Statistics.Iterations++;
@@ -495,14 +560,17 @@ public class LeadAgent : IDisposable
             targetBranch = await _gitManager.GetCurrentBranchAsync(ct);
         }
 
+        var task = taskAgent.Task;
+        var commitMessage = task.Title ?? task.Description;
+
         return _teamConfig.MergeStrategy switch
         {
             MergeStrategy.RebaseThenMerge => await _mergeManager.RebaseAndMergeAsync(
-                taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct),
+                taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage),
             MergeStrategy.MergeDirect => await _mergeManager.MergeDirectAsync(
-                taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct),
+                taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage),
             _ => await _mergeManager.SequentialMergeAsync(
-                taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct)
+                taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage)
         };
     }
 
@@ -542,67 +610,58 @@ public class LeadAgent : IDisposable
             sb.AppendLine();
         }
 
-        // Current task state
-        sb.AppendLine("--- TASK QUEUE ---");
+        // Task summary (don't list every task — too much context for the AI)
         var allTasks = _taskStore.GetAll();
         var stats = _taskStore.GetStatistics();
+        sb.AppendLine("--- TASK SUMMARY ---");
         sb.AppendLine($"Total: {stats.Total} | Pending: {stats.Pending} | InProgress: {stats.InProgress} | Completed: {stats.Completed} | Failed: {stats.Failed}");
         sb.AppendLine();
 
-        foreach (var task in allTasks)
-        {
-            var status = task.Status.ToString();
-            var priority = task.Priority != TaskPriority.Normal ? $" [{task.Priority}]" : "";
-            var error = task.Error != null ? $" (Error: {Truncate(task.Error, 80)})" : "";
-            var retries = task.RetryCount > 0 ? $" (retried {task.RetryCount}x)" : "";
-            sb.AppendLine($"  [{status}]{priority} {task.TaskId}: {task.Title ?? task.Description}{error}{retries}");
-        }
-        sb.AppendLine();
-
-        // Claimable tasks
-        var claimable = _taskStore.GetClaimable();
-        if (claimable.Count > 0)
-        {
-            sb.AppendLine("CLAIMABLE (ready to execute):");
-            foreach (var task in claimable)
-            {
-                sb.AppendLine($"  {task.TaskId}: {task.Title ?? task.Description}");
-            }
-            sb.AppendLine();
-        }
-
-        // Failed tasks eligible for retry
+        // Only list failed tasks eligible for retry (this is why the AI is being consulted)
         var retryable = allTasks
             .Where(t => t.Status == Models.TaskStatus.Failed && t.RetryCount < t.MaxRetries)
             .ToList();
         if (retryable.Count > 0)
         {
-            sb.AppendLine("RETRYABLE (failed but can be retried):");
-            foreach (var task in retryable)
+            sb.AppendLine("FAILED TASKS (eligible for retry):");
+            foreach (var task in retryable.Take(20))
             {
-                sb.AppendLine($"  {task.TaskId}: {task.Title ?? task.Description} — {task.Error}");
+                sb.AppendLine($"  {task.TaskId}: {task.Title ?? task.Description} — Error: {Truncate(task.Error ?? "unknown", 100)}");
             }
+            if (retryable.Count > 20)
+                sb.AppendLine($"  ... and {retryable.Count - 20} more");
+            sb.AppendLine();
+        }
+
+        // List permanently failed tasks (exceeded retries)
+        var permFailed = allTasks
+            .Where(t => t.Status == Models.TaskStatus.Failed && t.RetryCount >= t.MaxRetries)
+            .ToList();
+        if (permFailed.Count > 0)
+        {
+            sb.AppendLine("PERMANENTLY FAILED (max retries exceeded):");
+            foreach (var task in permFailed.Take(10))
+            {
+                sb.AppendLine($"  {task.TaskId}: {task.Title ?? task.Description}");
+            }
+            if (permFailed.Count > 10)
+                sb.AppendLine($"  ... and {permFailed.Count - 10} more");
             sb.AppendLine();
         }
 
         // Decision format
         sb.AppendLine("--- DECISION FORMAT ---");
+        sb.AppendLine("You are being consulted because there are failed tasks that may need retry or skip decisions.");
         sb.AppendLine("You MUST output your decision in this exact format:");
         sb.AppendLine();
         sb.AppendLine("---LEAD_DECISION---");
-        sb.AppendLine("ACTION: next_task | retry_task | add_task | skip_task | declare_complete");
-        sb.AppendLine("TASK_ID: <task id, required for next_task/retry_task/skip_task>");
+        sb.AppendLine("ACTION: retry_task | skip_task | declare_complete");
+        sb.AppendLine("TASK_ID: <task id, required for retry_task/skip_task>");
         sb.AppendLine("REASON: <brief explanation>");
-        sb.AppendLine("NEW_TASK_TITLE: <title, only for add_task>");
-        sb.AppendLine("NEW_TASK_DESCRIPTION: <description, only for add_task>");
         sb.AppendLine("---END_DECISION---");
         sb.AppendLine();
-
-        if (_runningAgents.Count < MaxConcurrent && claimable.Count > 0)
-        {
-            sb.AppendLine($"You have {MaxConcurrent - _runningAgents.Count} free agent slot(s). Consider starting the next task.");
-        }
-        sb.AppendLine("Think through which task should be done next (considering priority, dependencies, and what's already completed), then output exactly ONE decision block.");
+        sb.AppendLine("Choose retry_task to retry a failed task, skip_task to skip it, or declare_complete if all remaining failures are acceptable.");
+        sb.AppendLine("Output exactly ONE decision block. Be concise — do not list tasks or analyze at length.");
 
         return sb.ToString();
     }

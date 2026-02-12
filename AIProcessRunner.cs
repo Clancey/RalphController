@@ -24,27 +24,62 @@ public static class AIProcessRunner
         Action<string>? onOutput = null,
         CancellationToken cancellationToken = default)
     {
+        string? tempPromptFile = null;
+        string? tempScriptFile = null;
+
         try
         {
             var psi = new ProcessStartInfo
             {
-                FileName = providerConfig.ExecutablePath,
-                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 WorkingDirectory = workingDir
             };
 
-            // Build arguments - append prompt if UsesPromptArgument
+            // Determine how to pass the prompt based on provider config
             if (providerConfig.UsesPromptArgument)
             {
-                var escapedPrompt = prompt.Replace("\"", "\\\"");
-                psi.Arguments = $"{providerConfig.Arguments} \"{escapedPrompt}\"";
+                // Write prompt to temp file and use a shell script to avoid
+                // argument length limits and quoting issues.
+                // Also closes stdin via exec < /dev/null to prevent hangs.
+                tempPromptFile = Path.GetTempFileName();
+                await File.WriteAllTextAsync(tempPromptFile, prompt, cancellationToken);
+
+                if (OperatingSystem.IsWindows())
+                {
+                    tempScriptFile = Path.GetTempFileName() + ".bat";
+                    var scriptContent = $"@echo off\ntype \"{tempPromptFile}\" | {providerConfig.ExecutablePath} {providerConfig.Arguments}";
+                    await File.WriteAllTextAsync(tempScriptFile, scriptContent, cancellationToken);
+                    psi.FileName = "cmd.exe";
+                    psi.Arguments = $"/c \"{tempScriptFile}\"";
+                }
+                else
+                {
+                    tempScriptFile = Path.GetTempFileName() + ".sh";
+                    var scriptContent = $"#!/bin/bash\nexec < /dev/null\n{providerConfig.ExecutablePath} {providerConfig.Arguments} \"$(cat '{tempPromptFile}')\"";
+                    await File.WriteAllTextAsync(tempScriptFile, scriptContent, cancellationToken);
+                    // Make executable
+                    Process.Start("chmod", $"+x \"{tempScriptFile}\"")?.WaitForExit();
+                    psi.FileName = "/bin/bash";
+                    psi.Arguments = tempScriptFile;
+                }
+
+                psi.RedirectStandardInput = false;
             }
             else
             {
+                // Stdin-based: write prompt to stdin then close it
+                psi.FileName = providerConfig.ExecutablePath;
                 psi.Arguments = providerConfig.Arguments;
+                psi.RedirectStandardInput = true;
+            }
+
+            // Provider-specific environment variables
+            if (providerConfig.Provider == AIProvider.OpenCode)
+            {
+                psi.Environment["OPENCODE_DISABLE_AUTOUPDATE"] = "true";
+                psi.Environment["OPENCODE_PERMISSION"] = "{\"permission\":\"allow\"}";
             }
 
             using var process = Process.Start(psi);
@@ -54,23 +89,19 @@ public static class AIProcessRunner
             }
 
             // Write prompt to stdin if applicable
-            if (providerConfig.UsesStdin)
-            {
-                await process.StandardInput.WriteAsync(prompt);
-                process.StandardInput.Close();
-            }
-            else if (!providerConfig.UsesPromptArgument)
+            if (psi.RedirectStandardInput)
             {
                 await process.StandardInput.WriteAsync(prompt);
                 process.StandardInput.Close();
             }
 
-            // Read output — stream stdout line-by-line to parse stream-json and
-            // emit only meaningful text, avoiding raw JSON flooding the TUI.
+            // Read output — stream stdout line-by-line to parse stream-json /
+            // OpenCode JSON and emit only meaningful text.
             var outputBuilder = new StringBuilder();
             var textBuilder = new StringBuilder();
             var lastProgressAt = DateTime.UtcNow;
             var usesStreamJson = providerConfig.UsesStreamJson;
+            var isOpenCode = providerConfig.Provider == AIProvider.OpenCode;
             long outputChars = 0;
 
             var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
@@ -86,6 +117,14 @@ public static class AIProcessRunner
                 if (usesStreamJson)
                 {
                     var text = ParseStreamJsonLine(line);
+                    if (text != null)
+                    {
+                        textBuilder.Append(text);
+                    }
+                }
+                else if (isOpenCode)
+                {
+                    var text = ParseOpenCodeJsonLine(line);
                     if (text != null)
                     {
                         textBuilder.Append(text);
@@ -128,7 +167,7 @@ public static class AIProcessRunner
                 Success = process.ExitCode == 0,
                 Output = output,
                 ParsedText = parsedText,
-                Error = error,
+                Error = error ?? "",
                 OutputChars = outputChars,
                 ErrorChars = error?.Length ?? 0
             };
@@ -136,6 +175,14 @@ public static class AIProcessRunner
         catch (Exception ex)
         {
             return new AgentProcessResult { Success = false, Error = ex.Message };
+        }
+        finally
+        {
+            // Clean up temp files
+            if (tempPromptFile != null && File.Exists(tempPromptFile))
+                try { File.Delete(tempPromptFile); } catch { }
+            if (tempScriptFile != null && File.Exists(tempScriptFile))
+                try { File.Delete(tempScriptFile); } catch { }
         }
     }
 
@@ -176,6 +223,63 @@ public static class AIProcessRunner
                 return directTextEl.GetString();
             }
 
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Parse a line of OpenCode JSON output to extract text content.
+    /// Handles types: text, text_delta, content_block_delta, error.
+    /// </summary>
+    public static string? ParseOpenCodeJsonLine(string line)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("{"))
+                return null;
+
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("type", out var typeEl))
+            {
+                var type = typeEl.GetString();
+                if (type is "text" or "text_delta" or "content_block_delta")
+                {
+                    if (root.TryGetProperty("text", out var textEl))
+                        return textEl.GetString();
+                    if (root.TryGetProperty("part", out var partEl) && partEl.TryGetProperty("text", out textEl))
+                        return textEl.GetString();
+                    if (root.TryGetProperty("content", out textEl))
+                        return textEl.GetString();
+                    if (root.TryGetProperty("delta", out var deltaEl) && deltaEl.TryGetProperty("text", out textEl))
+                        return textEl.GetString();
+                }
+                else if (type == "error")
+                {
+                    string? errorMsg = null;
+                    if (root.TryGetProperty("error", out var errorEl))
+                    {
+                        if (errorEl.TryGetProperty("message", out var msgEl))
+                            errorMsg = msgEl.GetString();
+                        else if (errorEl.TryGetProperty("data", out var dataEl) &&
+                                 dataEl.TryGetProperty("message", out var dataMsgEl))
+                            errorMsg = dataMsgEl.GetString();
+                    }
+                    else if (root.TryGetProperty("part", out var partEl) &&
+                             partEl.TryGetProperty("error", out errorEl) &&
+                             errorEl.TryGetProperty("message", out var msgEl2))
+                    {
+                        errorMsg = msgEl2.GetString();
+                    }
+                    if (errorMsg != null)
+                        return $"Error: {errorMsg}";
+                }
+            }
             return null;
         }
         catch

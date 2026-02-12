@@ -457,13 +457,46 @@ public class MergeManager : IDisposable
     // --- Merge strategy implementations ---
 
     /// <summary>
+    /// Stash any uncommitted changes in the given directory.
+    /// Returns true if changes were stashed (and need to be popped later).
+    /// </summary>
+    private async Task<bool> StashIfDirtyAsync(string directory, CancellationToken ct)
+    {
+        var statusResult = await _worktrees.RunGitCommandAsync(directory,
+            "status --porcelain",
+            ct);
+
+        if (statusResult.ExitCode != 0 || string.IsNullOrWhiteSpace(statusResult.Output))
+            return false;
+
+        var stashResult = await _worktrees.RunGitCommandAsync(directory,
+            "stash push -m \"ralph-merge-autostash\"",
+            ct);
+
+        return stashResult.ExitCode == 0;
+    }
+
+    /// <summary>
+    /// Pop the most recent stash if we previously stashed changes.
+    /// </summary>
+    private async Task PopStashAsync(string directory, bool wasStashed, CancellationToken ct)
+    {
+        if (!wasStashed) return;
+
+        await _worktrees.RunGitCommandAsync(directory,
+            "stash pop",
+            ct);
+    }
+
+    /// <summary>
     /// Rebase worktree branch onto target branch, then merge.
     /// </summary>
     public async Task<MergeResult> RebaseAndMergeAsync(
         string worktreePath,
         string branchName,
         string targetBranch,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? commitMessage = null)
     {
         var repositoryRoot = _worktrees.RepositoryRoot;
 
@@ -490,42 +523,76 @@ public class MergeManager : IDisposable
             };
         }
 
-        var mergeResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
-            $"merge {branchName} --no-ff",
-            cancellationToken);
+        // Stash any uncommitted changes in the repo root before merging
+        var wasStashed = await StashIfDirtyAsync(repositoryRoot, cancellationToken);
 
-        if (mergeResult.ExitCode != 0)
+        try
         {
-            var conflicts = DetectConflicts(repositoryRoot);
-            if (conflicts.Count > 0)
+            // Squash merge: collapses all worktree commits into a single commit
+            var mergeResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
+                $"merge --squash {branchName}",
+                cancellationToken);
+
+            if (mergeResult.ExitCode != 0)
             {
+                var conflicts = DetectConflicts(repositoryRoot);
+                if (conflicts.Count > 0)
+                {
+                    await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
+                    return new MergeResult
+                    {
+                        Success = false,
+                        Conflicts = conflicts,
+                        Error = "Merge conflicts detected"
+                    };
+                }
+                await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
                 return new MergeResult
                 {
                     Success = false,
-                    Conflicts = conflicts,
-                    Error = "Merge conflicts detected"
+                    Error = $"Merge failed: {mergeResult.Error}"
                 };
             }
+
+            // Squash doesn't auto-commit — create the commit with our message
+            var msg = commitMessage ?? $"Merge {branchName}";
+            var commitResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
+                $"commit -m \"{msg.Replace("\"", "\\\"")}\"",
+                cancellationToken);
+
+            if (commitResult.ExitCode != 0)
+            {
+                await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
+                return new MergeResult
+                {
+                    Success = false,
+                    Error = $"Squash commit failed: {commitResult.Error}"
+                };
+            }
+
+            var shaResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
+                "rev-parse HEAD",
+                cancellationToken);
+
+            await _worktrees.RunGitCommandAsync(repositoryRoot,
+                $"branch -D {branchName}",
+                cancellationToken);
+
+            // Pop stash after successful merge
+            await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
+
             return new MergeResult
             {
-                Success = false,
-                Error = $"Merge failed: {mergeResult.Error}"
+                Success = true,
+                MergeCommitSha = shaResult.Output.Trim()
             };
         }
-
-        var shaResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
-            "rev-parse HEAD",
-            cancellationToken);
-
-        await _worktrees.RunGitCommandAsync(repositoryRoot,
-            $"branch -D {branchName}",
-            cancellationToken);
-
-        return new MergeResult
+        catch
         {
-            Success = true,
-            MergeCommitSha = shaResult.Output.Trim()
-        };
+            // Always try to restore stashed changes on unexpected failure
+            await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
+            throw;
+        }
     }
 
     /// <summary>
@@ -535,42 +602,76 @@ public class MergeManager : IDisposable
         string worktreePath,
         string branchName,
         string targetBranch,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? commitMessage = null)
     {
         var repositoryRoot = _worktrees.RepositoryRoot;
 
-        await _worktrees.RunGitCommandAsync(repositoryRoot,
-            $"checkout {targetBranch}",
-            cancellationToken);
+        // Stash any uncommitted changes in the repo root before merging
+        var wasStashed = await StashIfDirtyAsync(repositoryRoot, cancellationToken);
 
-        var result = await _worktrees.RunGitCommandAsync(repositoryRoot,
-            $"merge {branchName}",
-            cancellationToken);
-
-        if (result.ExitCode != 0)
+        try
         {
-            var conflicts = DetectConflicts(repositoryRoot);
+            await _worktrees.RunGitCommandAsync(repositoryRoot,
+                $"checkout {targetBranch}",
+                cancellationToken);
+
+            // Squash merge: collapses all worktree commits into a single commit
+            var result = await _worktrees.RunGitCommandAsync(repositoryRoot,
+                $"merge --squash {branchName}",
+                cancellationToken);
+
+            if (result.ExitCode != 0)
+            {
+                var conflicts = DetectConflicts(repositoryRoot);
+                await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
+                return new MergeResult
+                {
+                    Success = false,
+                    Conflicts = conflicts,
+                    Error = $"Merge failed: {result.Error}"
+                };
+            }
+
+            // Squash doesn't auto-commit — create the commit with our message
+            var msg = commitMessage ?? $"Merge {branchName}";
+            var commitResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
+                $"commit -m \"{msg.Replace("\"", "\\\"")}\"",
+                cancellationToken);
+
+            if (commitResult.ExitCode != 0)
+            {
+                await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
+                return new MergeResult
+                {
+                    Success = false,
+                    Error = $"Squash commit failed: {commitResult.Error}"
+                };
+            }
+
+            var shaResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
+                "rev-parse HEAD",
+                cancellationToken);
+
+            await _worktrees.RunGitCommandAsync(repositoryRoot,
+                $"branch -D {branchName}",
+                cancellationToken);
+
+            // Pop stash after successful merge
+            await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
+
             return new MergeResult
             {
-                Success = false,
-                Conflicts = conflicts,
-                Error = $"Merge failed: {result.Error}"
+                Success = true,
+                MergeCommitSha = shaResult.Output.Trim()
             };
         }
-
-        var shaResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
-            "rev-parse HEAD",
-            cancellationToken);
-
-        await _worktrees.RunGitCommandAsync(repositoryRoot,
-            $"branch -D {branchName}",
-            cancellationToken);
-
-        return new MergeResult
+        catch
         {
-            Success = true,
-            MergeCommitSha = shaResult.Output.Trim()
-        };
+            // Always try to restore stashed changes on unexpected failure
+            await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
+            throw;
+        }
     }
 
     /// <summary>
@@ -580,9 +681,10 @@ public class MergeManager : IDisposable
         string worktreePath,
         string branchName,
         string targetBranch,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? commitMessage = null)
     {
-        return await RebaseAndMergeAsync(worktreePath, branchName, targetBranch, cancellationToken);
+        return await RebaseAndMergeAsync(worktreePath, branchName, targetBranch, cancellationToken, commitMessage);
     }
 
     /// <summary>
@@ -735,14 +837,16 @@ public class MergeManager : IDisposable
             RegisterFileOwnership(agentId, task.Result.FilesModified);
         }
 
+        var commitMessage = task.Title ?? task.Description ?? task.TaskId;
+
         return _teamConfig.MergeStrategy switch
         {
             MergeStrategy.RebaseThenMerge => await RebaseAndMergeAsync(
-                worktreePath, branchName, targetBranch, ct),
+                worktreePath, branchName, targetBranch, ct, commitMessage),
             MergeStrategy.MergeDirect => await MergeDirectAsync(
-                worktreePath, branchName, targetBranch, ct),
+                worktreePath, branchName, targetBranch, ct, commitMessage),
             _ => await SequentialMergeAsync(
-                worktreePath, branchName, targetBranch, ct)
+                worktreePath, branchName, targetBranch, ct, commitMessage)
         };
     }
 

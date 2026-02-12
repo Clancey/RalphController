@@ -549,6 +549,11 @@ public sealed class TeamsTUI : IDisposable
     {
         var tasks = _orchestrator.TaskStore.GetAll();
 
+        // Build a set of claimable task IDs so we can distinguish
+        // Pending (claimable) from Blocked (pending with unsatisfied deps).
+        var claimableIds = new HashSet<string>(
+            _orchestrator.TaskStore.GetClaimable().Select(t => t.TaskId));
+
         var table = new Table()
             .Border(TableBorder.Rounded)
             .Title("[bold]Tasks[/]")
@@ -560,7 +565,12 @@ public sealed class TeamsTUI : IDisposable
 
         foreach (var task in tasks)
         {
-            var statusMarkup = FormatTaskStatus(task.Status);
+            var isBlocked = task.Status == TaskStatus.Pending
+                && task.DependsOn.Count > 0
+                && !claimableIds.Contains(task.TaskId);
+            var statusMarkup = isBlocked
+                ? "[grey]\u25cc Blocked[/]"       // ◌
+                : FormatTaskStatus(task.Status);
             var escapedId = Markup.Escape(Truncate(task.TaskId, 12));
             var escapedTitle = Markup.Escape(Truncate(task.Title ?? task.Description, 45));
             var escapedAgent = task.ClaimedByAgentId != null

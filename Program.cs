@@ -1671,8 +1671,6 @@ else if (teamsMode)
     var decomposition = DecompositionStrategy.AIDecomposed;
     var mergeStrategy = MergeStrategy.Sequential;
     var leadDriven = false;
-    string? verifyCommand = null;
-
     var teamStep = 0;
     while (teamStep < 6) // Steps: 0=agents, 1=lead, 2=assignment, 3=decomposition, 4=merge, 5=mode
     {
@@ -1844,19 +1842,6 @@ else if (teamsMode)
 
                 leadDriven = modeChoice.StartsWith("Lead");
 
-                // Verify command (only for lead-driven mode)
-                verifyCommand = null;
-                if (leadDriven)
-                {
-                    var wantsVerify = AnsiConsole.Confirm("[yellow]Add a verify command (e.g., dotnet build)?[/]", false);
-                    if (wantsVerify)
-                    {
-                        verifyCommand = AnsiConsole.Prompt(
-                            new TextPrompt<string>("[yellow]Verify command:[/]")
-                                .DefaultValue("dotnet build"));
-                    }
-                }
-
                 teamStep++;
                 break;
             }
@@ -1872,8 +1857,7 @@ else if (teamsMode)
         DecompositionStrategy = decomposition,
         MergeStrategy = mergeStrategy,
         UseWorktrees = true,
-        LeadDriven = leadDriven,
-        VerifyCommand = verifyCommand
+        LeadDriven = leadDriven
     };
 
     projectSettings.Teams = teamConfig;
@@ -1889,8 +1873,6 @@ else if (teamsMode)
     var modeLabel = leadDriven ? "Lead-driven (sequential)" : "Parallel";
     AnsiConsole.MarkupLine($"[green]Teams:[/] {agentCount} agents, Lead: {Markup.Escape(leadModel!.DisplayName)}, Sub-agents: {Markup.Escape(teamModelNames)}");
     AnsiConsole.MarkupLine($"[green]Mode:[/] {modeLabel}, Strategy: {decomposition}, Merge: {mergeStrategy}");
-    if (!string.IsNullOrEmpty(verifyCommand))
-        AnsiConsole.MarkupLine($"[green]Verify:[/] {Markup.Escape(verifyCommand)}");
 }
 else if (!teamsMode && !freshMode && projectSettings.Teams?.IsEnabled == true)
 {

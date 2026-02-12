@@ -19,6 +19,7 @@ public static class ScaffoldPrompts
         HOW the agent should operate, the workflow, and project-specific rules.
 
         CRITICAL: This is NOT just a notes file. It's the agent's operating manual.
+        IMPORTANT: Detect the project type from context and fill in REAL build/test commands — never leave placeholders.
 
         ## Required Structure:
 
@@ -32,12 +33,12 @@ public static class ScaffoldPrompts
         ### 2. Build Commands
         Include actual build/test commands for this project type:
         ```bash
-        # Add build commands for this project
+        # Detect from project files and fill in real commands
         ```
 
         ### 3. Test Commands
         ```bash
-        # Add test commands for this project
+        # Detect from project files and fill in real commands
         ```
 
         ### 4. Error Handling

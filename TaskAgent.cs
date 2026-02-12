@@ -381,6 +381,10 @@ public class TaskAgent : IDisposable
         {
             sb.AppendLine($"- Run: {_teamConfig.VerifyCommand}");
         }
+        else
+        {
+            sb.AppendLine("- Build and test the project using the build/test commands from the agent configuration above");
+        }
         sb.AppendLine("- Check for correctness, edge cases, and potential bugs");
         sb.AppendLine("- If issues are found, fix them");
         sb.AppendLine("- Report a summary of your findings");
@@ -398,6 +402,14 @@ public class TaskAgent : IDisposable
             sb.AppendLine("The following is the project prompt for reference. Ignore any task-picking or verification workflow instructions.");
             sb.AppendLine();
             sb.AppendLine(AIProcessRunner.StripRalphStatusBlock(promptContent));
+            sb.AppendLine();
+        }
+
+        var agentsContent = AIProcessRunner.TryReadFile(_config.AgentsFilePath);
+        if (!string.IsNullOrEmpty(agentsContent))
+        {
+            sb.AppendLine("--- AGENT CONFIGURATION (agents.md) ---");
+            sb.AppendLine(agentsContent);
             sb.AppendLine();
         }
     }

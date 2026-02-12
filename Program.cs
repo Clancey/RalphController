@@ -2179,22 +2179,33 @@ if (noTui)
 
 if (teamsMode && teamConfig != null)
 {
-    // Teams mode
-    using var teamFileWatcher = new FileWatcher(config);
-    using var teamController = new TeamController(config);
-    using var teamUi = new ConsoleUI(teamController, teamFileWatcher, config);
-
-    teamUi.AutoStart = true;
-    teamFileWatcher.Start();
+    // Teams mode with new orchestrator + TUI
+    using var orchestrator = new TeamOrchestrator(config);
+    using var teamsTui = new RalphController.TUI.TeamsTUI(orchestrator, config);
+    using var cts = new CancellationTokenSource();
 
     Console.CancelKeyPress += (_, e) =>
     {
         e.Cancel = true;
-        teamUi.Stop();
+        cts.Cancel();
+        orchestrator.Stop();
     };
 
     AnsiConsole.Clear();
-    await teamUi.RunAsync();
+
+    // Run orchestrator and TUI concurrently
+    var orchestratorTask = orchestrator.RunAsync();
+    var tuiTask = teamsTui.RunAsync(cts.Token);
+
+    await Task.WhenAny(orchestratorTask, tuiTask);
+
+    // If orchestrator finished first, cancel TUI
+    if (orchestratorTask.IsCompleted)
+        cts.Cancel();
+
+    // Wait for both to finish gracefully
+    try { await orchestratorTask; } catch (OperationCanceledException) { }
+    try { await tuiTask; } catch (OperationCanceledException) { }
 
     AnsiConsole.MarkupLine("\n[yellow]Goodbye![/]");
     return 0;

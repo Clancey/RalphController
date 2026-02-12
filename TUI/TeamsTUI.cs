@@ -144,8 +144,26 @@ public sealed class TeamsTUI : IDisposable
                 _agentStats[stats.AgentId] = stats;
                 if (!_sortedAgentIds.Contains(stats.AgentId))
                 {
-                    _sortedAgentIds.Add(stats.AgentId);
-                    _sortedAgentIds.Sort(StringComparer.OrdinalIgnoreCase);
+                    // Ensure "lead" is always first
+                    if (stats.AgentId == "lead")
+                    {
+                        _sortedAgentIds.Insert(0, stats.AgentId);
+                    }
+                    else
+                    {
+                        _sortedAgentIds.Add(stats.AgentId);
+                        // Sort non-lead entries only
+                        if (_sortedAgentIds.Count > 1 && _sortedAgentIds[0] == "lead")
+                        {
+                            var rest = _sortedAgentIds.Skip(1).OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToList();
+                            _sortedAgentIds.RemoveRange(1, _sortedAgentIds.Count - 1);
+                            _sortedAgentIds.AddRange(rest);
+                        }
+                        else
+                        {
+                            _sortedAgentIds.Sort(StringComparer.OrdinalIgnoreCase);
+                        }
+                    }
                 }
             }
             RequestRender();
@@ -158,7 +176,40 @@ public sealed class TeamsTUI : IDisposable
             RequestRender();
         };
 
+        // Lead-driven mode: ephemeral TaskAgent lifecycle
+        _orchestrator.OnTaskAgentCreated += taskAgent =>
+        {
+            lock (_viewLock)
+            {
+                if (!_sortedAgentIds.Contains(taskAgent.AgentId))
+                {
+                    _sortedAgentIds.Add(taskAgent.AgentId);
+                }
+            }
+            _outputBuffers.Append(taskAgent.AgentId, $"TaskAgent created for: {taskAgent.Task.Title ?? taskAgent.Task.Description}");
+            RequestRender();
+        };
+
+        _orchestrator.OnTaskAgentDestroyed += taskAgent =>
+        {
+            // Keep in list briefly with stopped state, then schedule removal
+            _outputBuffers.Append(taskAgent.AgentId, "TaskAgent completed and destroyed");
+            _ = RemoveTaskAgentAfterDelay(taskAgent.AgentId, TimeSpan.FromSeconds(5));
+            RequestRender();
+        };
+
         _outputBuffers.OnOutputReceived += _ => RequestRender();
+    }
+
+    private async Task RemoveTaskAgentAfterDelay(string agentId, TimeSpan delay)
+    {
+        await System.Threading.Tasks.Task.Delay(delay);
+        lock (_viewLock)
+        {
+            _sortedAgentIds.Remove(agentId);
+            _agentStats.Remove(agentId);
+        }
+        RequestRender();
     }
 
     // -------------------------------------------------------
@@ -436,7 +487,7 @@ public sealed class TeamsTUI : IDisposable
                 _agentStats.TryGetValue(id, out stats);
 
             var state = stats?.State ?? AgentState.Idle;
-            var stateMarkup = FormatAgentState(state);
+            var stateMarkup = FormatAgentState(state, stats?.CurrentSubPhase);
             var taskTitle = stats?.CurrentTask?.Title;
             var escapedTask = taskTitle != null
                 ? Markup.Escape(Truncate(taskTitle, 30))
@@ -514,7 +565,7 @@ public sealed class TeamsTUI : IDisposable
 
         // Header line with agent info
         var state = stats?.State ?? AgentState.Idle;
-        var stateStr = FormatAgentState(state);
+        var stateStr = FormatAgentState(state, stats?.CurrentSubPhase);
         var taskTitle = stats?.CurrentTask?.Title;
         var escapedTask = taskTitle != null
             ? Markup.Escape(taskTitle)
@@ -705,19 +756,35 @@ public sealed class TeamsTUI : IDisposable
     /// <summary>
     /// Format agent state with the correct color per the color scheme.
     /// </summary>
-    private static string FormatAgentState(AgentState state) => state switch
+    private static string FormatAgentState(AgentState state, SubAgentPhase? subPhase = null)
     {
-        AgentState.Ready => "[blue]Ready[/]",
-        AgentState.Working => "[green]Working[/]",
-        AgentState.PlanningWork => "[yellow]Planning[/]",
-        AgentState.Idle => "[dim]Idle[/]",
-        AgentState.Error => "[red]Error[/]",
-        AgentState.Stopped => "[grey]Stopped[/]",
-        AgentState.Spawning => "[blue]Spawning[/]",
-        AgentState.Claiming => "[blue]Claiming[/]",
-        AgentState.ShuttingDown => "[grey]Shutting Down[/]",
-        _ => $"[dim]{Markup.Escape(state.ToString())}[/]"
-    };
+        // In lead-driven mode, show the sub-phase if available
+        if (subPhase is SubAgentPhase.Plan)
+            return "[yellow]Planning[/]";
+        if (subPhase is SubAgentPhase.Code)
+            return "[green]Coding[/]";
+        if (subPhase is SubAgentPhase.Verify)
+            return "[cyan]Verifying[/]";
+
+        return state switch
+        {
+            AgentState.Ready => "[blue]Ready[/]",
+            AgentState.Working => "[green]Working[/]",
+            AgentState.PlanningWork => "[yellow]Planning[/]",
+            AgentState.Deciding => "[magenta]Deciding[/]",
+            AgentState.Coding => "[green]Coding[/]",
+            AgentState.Verifying => "[cyan]Verifying[/]",
+            AgentState.Reviewing => "[yellow]Reviewing[/]",
+            AgentState.MergingWork => "[yellow]Merging[/]",
+            AgentState.Idle => "[dim]Idle[/]",
+            AgentState.Error => "[red]Error[/]",
+            AgentState.Stopped => "[grey]Stopped[/]",
+            AgentState.Spawning => "[blue]Spawning[/]",
+            AgentState.Claiming => "[blue]Claiming[/]",
+            AgentState.ShuttingDown => "[grey]Shutting Down[/]",
+            _ => $"[dim]{Markup.Escape(state.ToString())}[/]"
+        };
+    }
 
     /// <summary>
     /// Format task status with symbol and color per the color scheme.
@@ -764,8 +831,9 @@ public sealed class TeamsTUI : IDisposable
 
         var id = output[1..closeBracket];
 
-        // Only match agent-N patterns, not arbitrary bracket text
-        if (id.StartsWith("agent-", StringComparison.OrdinalIgnoreCase))
+        // Match agent-N patterns (parallel mode) and task-agent-* patterns (lead-driven mode)
+        if (id.StartsWith("agent-", StringComparison.OrdinalIgnoreCase) ||
+            id.StartsWith("task-agent-", StringComparison.OrdinalIgnoreCase))
             return id;
 
         return null;

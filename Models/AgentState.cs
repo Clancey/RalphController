@@ -22,6 +22,21 @@ public enum AgentState
     /// <summary>In plan mode, waiting for lead approval (read-only)</summary>
     PlanningWork,
 
+    /// <summary>Lead agent is deciding which task to run next</summary>
+    Deciding,
+
+    /// <summary>Sub-agent is in the Code phase (implementation)</summary>
+    Coding,
+
+    /// <summary>Sub-agent is in the Verify phase (build/test/review)</summary>
+    Verifying,
+
+    /// <summary>Lead agent is reviewing a TaskAgent's result</summary>
+    Reviewing,
+
+    /// <summary>Lead/orchestrator is merging a completed task's worktree</summary>
+    MergingWork,
+
     /// <summary>No claimable tasks available; waiting for tasks to unblock</summary>
     Idle,
 
@@ -114,4 +129,7 @@ public class AgentStatistics
 
     /// <summary>Provider/model assigned to this agent</summary>
     public ModelSpec? AssignedModel { get; set; }
+
+    /// <summary>Current sub-agent phase (for lead-driven mode TaskAgents)</summary>
+    public SubAgentPhase? CurrentSubPhase { get; set; }
 }

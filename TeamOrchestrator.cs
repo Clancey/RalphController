@@ -35,6 +35,8 @@ public class TeamOrchestrator : IDisposable
     public event Action<string>? OnError;
     public event Action<AgentStatistics>? OnAgentUpdate;
     public event Action<TaskStoreStatistics>? OnQueueUpdate;
+    public event Action<TaskAgent>? OnTaskAgentCreated;
+    public event Action<TaskAgent>? OnTaskAgentDestroyed;
 
 
     public TeamOrchestrator(RalphConfig config)
@@ -89,10 +91,14 @@ public class TeamOrchestrator : IDisposable
             _taskStore.AddTasks(tasks);
             OnQueueUpdate?.Invoke(_taskStore.GetStatistics());
 
-            await SpawnAgentsAsync(_stopCts.Token);
-            await CoordinateAsync(_stopCts.Token);
-            await SynthesizeResultsAsync(_stopCts.Token);
-            await MergeAndCleanupAsync(_stopCts.Token);
+            if (_teamConfig.LeadDriven)
+            {
+                await RunLeadDrivenAsync(_stopCts.Token);
+            }
+            else
+            {
+                await RunParallelAsync(_stopCts.Token);
+            }
 
             SetState(TeamOrchestratorState.Complete);
             OnOutput?.Invoke("Teams execution complete!");
@@ -107,6 +113,88 @@ public class TeamOrchestrator : IDisposable
             OnError?.Invoke($"Teams execution failed: {ex.Message}");
             SetState(TeamOrchestratorState.Failed);
         }
+    }
+
+    /// <summary>
+    /// Original parallel execution path: Spawn N agents → Coordinate → Synthesize → Merge
+    /// </summary>
+    private async Task RunParallelAsync(CancellationToken cancellationToken)
+    {
+        await SpawnAgentsAsync(cancellationToken);
+        await CoordinateAsync(cancellationToken);
+        await SynthesizeResultsAsync(cancellationToken);
+        await MergeAndCleanupAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Lead-driven sequential execution: Lead AI decides task order,
+    /// creates ephemeral TaskAgents with 3-phase sub-agents, merges after each task.
+    /// </summary>
+    private async Task RunLeadDrivenAsync(CancellationToken cancellationToken)
+    {
+        OnOutput?.Invoke("Running in LEAD-DRIVEN mode (sequential, 3-tier)");
+        SetState(TeamOrchestratorState.Coordinating);
+
+        // Clean up stale worktrees
+        if (_teamConfig.UseWorktrees)
+        {
+            var worktreeBaseDir = Path.Combine(_config.TargetDirectory, ".ralph-worktrees");
+            await _gitManager.CleanupStaleWorktreesAsync(worktreeBaseDir, cancellationToken);
+        }
+
+        OnOutput?.Invoke("Initializing lead agent...");
+
+        var leadAgent = new LeadAgent(
+            _config,
+            _teamConfig,
+            _taskStore,
+            _gitManager,
+            _mergeManager);
+
+        // Wire lead events to orchestrator events
+        leadAgent.OnOutput += output => OnOutput?.Invoke(output);
+        leadAgent.OnError += error => OnError?.Invoke(error);
+        leadAgent.OnUpdate += stats => OnAgentUpdate?.Invoke(stats);
+        leadAgent.OnQueueUpdate += stats => OnQueueUpdate?.Invoke(stats);
+
+        leadAgent.OnTaskAgentCreated += taskAgent =>
+        {
+            OnTaskAgentCreated?.Invoke(taskAgent);
+            // Also wire TaskAgent updates to orchestrator for TUI
+            taskAgent.OnUpdate += agentStats => OnAgentUpdate?.Invoke(agentStats);
+        };
+
+        leadAgent.OnTaskAgentDestroyed += taskAgent =>
+        {
+            OnTaskAgentDestroyed?.Invoke(taskAgent);
+        };
+
+        leadAgent.OnDecision += decision =>
+        {
+            OnOutput?.Invoke($"Lead decision: {decision.Action} {decision.TaskId ?? ""} — {decision.Reason ?? ""}");
+        };
+
+        // Emit initial lead stats so TUI shows the lead immediately
+        OnAgentUpdate?.Invoke(leadAgent.Statistics);
+        OnQueueUpdate?.Invoke(_taskStore.GetStatistics());
+
+        var taskStats = _taskStore.GetStatistics();
+        OnOutput?.Invoke($"Lead agent ready — {taskStats.Total} tasks queued, starting decision loop...");
+
+        try
+        {
+            await leadAgent.RunAsync(cancellationToken);
+        }
+        finally
+        {
+            leadAgent.Dispose();
+        }
+
+        // Synthesize results
+        await SynthesizeResultsAsync(cancellationToken);
+
+        // Cleanup persistence files
+        _taskStore.DeletePersistenceFiles();
     }
 
     public async Task<IReadOnlyList<AgentTask>> DecomposeAsync(CancellationToken cancellationToken)
@@ -209,7 +297,17 @@ public class TeamOrchestrator : IDisposable
                 OnAgentUpdate?.Invoke(agent.Statistics);
             };
             agent.OnIdle += a => RunHookAsync("TeammateIdle", a.AgentId);
-            agent.OnTaskComplete += (task, _) => RunHookAsync("TaskCompleted", task.TaskId);
+            agent.OnTaskComplete += (task, result) =>
+            {
+                _taskStore.Complete(task.TaskId, result);
+                OnQueueUpdate?.Invoke(_taskStore.GetStatistics());
+                RunHookAsync("TaskCompleted", task.TaskId);
+            };
+            agent.OnTaskFailed += (task, error) =>
+            {
+                _taskStore.Fail(task.TaskId, error);
+                OnQueueUpdate?.Invoke(_taskStore.GetStatistics());
+            };
 
             _agents[agentId] = agent;
             _agentMonitor[agentId] = new AgentMonitorInfo { AgentId = agentId };

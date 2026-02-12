@@ -100,6 +100,35 @@ public record TeamConfig
     /// </summary>
     public List<TeamMemberConfig> Members { get; init; } = new();
 
+    /// <summary>
+    /// Enable lead-driven sequential mode (3-tier: Lead → TaskAgent → Sub-agents).
+    /// When false, uses the existing parallel agent mode.
+    /// </summary>
+    public bool LeadDriven { get; init; } = false;
+
+    /// <summary>
+    /// Shell command to run during the Verify sub-agent phase (e.g., "dotnet build &amp;&amp; dotnet test").
+    /// If null, the verify phase runs an AI review without a build command.
+    /// </summary>
+    public string? VerifyCommand { get; init; }
+
+    /// <summary>
+    /// Timeout in seconds for the lead agent to produce a decision.
+    /// After this, falls back to sequential next-pending-task.
+    /// </summary>
+    public int LeadDecisionTimeoutSeconds { get; init; } = 120;
+
+    /// <summary>
+    /// Which sub-agent phases to run for each task.
+    /// Defaults to all three: Plan, Code, Verify.
+    /// </summary>
+    public List<SubAgentPhase> SubAgentPhases { get; init; } = new()
+    {
+        SubAgentPhase.Plan,
+        SubAgentPhase.Code,
+        SubAgentPhase.Verify
+    };
+
     /// <summary>Teams mode is enabled</summary>
     [JsonIgnore]
     public bool IsEnabled => AgentCount > 1;

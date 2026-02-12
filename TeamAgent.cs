@@ -3,10 +3,7 @@ using RalphController.Git;
 using RalphController.Merge;
 using RalphController.Parallel;
 using RalphController.Messaging;
-using System.Diagnostics;
 using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace RalphController;
 
@@ -383,8 +380,10 @@ public class TeamAgent : IDisposable
                         await WaitForShutdownOrNewWork(_stopCts.Token);
                         continue;
                     }
-                    else if (stats != null && stats.Pending > 0)
+                    else if (stats != null && (stats.Pending > 0 || stats.InProgress > 0))
                     {
+                        // Tasks exist (pending or other agents still working) — wait for
+                        // something to become claimable rather than exiting the loop.
                         SetState(AgentState.Idle);
                         OnIdle?.Invoke(this);
                         await WaitForClaimableTask(_stopCts.Token);
@@ -392,6 +391,7 @@ public class TeamAgent : IDisposable
                     }
                     else
                     {
+                        // stats is null — no task store configured
                         break;
                     }
                 }
@@ -568,6 +568,13 @@ public class TeamAgent : IDisposable
 
             if (_shutdownRequested)
             {
+                return;
+            }
+
+            var stats = _taskStore?.GetStatistics();
+            if (stats != null && stats.Pending == 0 && stats.InProgress == 0)
+            {
+                // Everything is done — no point waiting
                 return;
             }
 
@@ -794,72 +801,31 @@ public class TeamAgent : IDisposable
 
     /// <summary>
     /// Strip ---RALPH_STATUS---...---END_STATUS--- blocks and EXIT_SIGNAL lines from prompt content.
-    /// These are parsed by single-agent mode's ResponseAnalyzer and confuse team agents.
+    /// Delegates to shared AIProcessRunner.
     /// </summary>
     private static string StripRalphStatusBlock(string content)
-    {
-        // Remove the entire RALPH_STATUS template block
-        content = Regex.Replace(
-            content,
-            @"---RALPH_STATUS---.*?---END_STATUS---",
-            "",
-            RegexOptions.Singleline);
-
-        // Remove EXIT_SIGNAL lines
-        content = Regex.Replace(
-            content,
-            @"^.*EXIT_SIGNAL.*$",
-            "",
-            RegexOptions.Multiline);
-
-        // Collapse excessive blank lines left behind
-        content = Regex.Replace(content, @"\n{3,}", "\n\n");
-
-        return content.Trim();
-    }
+        => AIProcessRunner.StripRalphStatusBlock(content);
 
     /// <summary>
     /// Resolve the prompt file path, accounting for RalphFolder and worktrees.
+    /// Delegates to shared AIProcessRunner.
     /// </summary>
     private string ResolvePromptPath()
-    {
-        if (!string.IsNullOrEmpty(_config.RalphFolder))
-            return _config.PromptFilePath;
-
-        return _teamConfig.UseWorktrees
-            ? Path.Combine(_worktreePath, _config.PromptFile)
-            : _config.PromptFilePath;
-    }
+        => AIProcessRunner.ResolvePromptPath(_config, _teamConfig.UseWorktrees, _worktreePath);
 
     /// <summary>
     /// Resolve the implementation plan file path, accounting for RalphFolder and worktrees.
+    /// Delegates to shared AIProcessRunner.
     /// </summary>
     private string ResolvePlanPath()
-    {
-        if (!string.IsNullOrEmpty(_config.RalphFolder))
-            return _config.PlanFilePath;
-
-        return _teamConfig.UseWorktrees
-            ? Path.Combine(_worktreePath, _config.PlanFile)
-            : _config.PlanFilePath;
-    }
+        => AIProcessRunner.ResolvePlanPath(_config, _teamConfig.UseWorktrees, _worktreePath);
 
     /// <summary>
     /// Try to read a file, returning its content or null if not found.
-    /// Falls back to the canonical config path if the primary path doesn't exist.
+    /// Delegates to shared AIProcessRunner.
     /// </summary>
     private string? TryReadFile(string path)
-    {
-        if (File.Exists(path))
-            return File.ReadAllText(path);
-
-        // Fallback: try the canonical config path (for worktree scenarios where
-        // the file lives in the main repo but not the worktree)
-        if (path != _config.PromptFilePath && File.Exists(_config.PromptFilePath))
-            return File.ReadAllText(_config.PromptFilePath);
-
-        return null;
-    }
+        => AIProcessRunner.TryReadFile(path, _config.PromptFilePath);
 
     private AIProviderConfig GetProviderConfig()
     {
@@ -874,179 +840,26 @@ public class TeamAgent : IDisposable
         string prompt,
         CancellationToken cancellationToken)
     {
-        try
+        var providerConfig = GetProviderConfig();
+        var workingDir = _teamConfig.UseWorktrees ? _worktreePath : _config.TargetDirectory;
+
+        var result = await AIProcessRunner.RunAsync(
+            providerConfig,
+            prompt,
+            workingDir,
+            output => OnOutput?.Invoke(output),
+            cancellationToken);
+
+        Statistics.OutputChars += result.OutputChars;
+        Statistics.ErrorChars += result.ErrorChars;
+
+        // Get modified files
+        if (result.Success && _teamConfig.UseWorktrees)
         {
-            var providerConfig = GetProviderConfig();
-            var workingDir = _teamConfig.UseWorktrees ? _worktreePath : _config.TargetDirectory;
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = providerConfig.ExecutablePath,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                WorkingDirectory = workingDir
-            };
-
-            // Build arguments - append prompt if UsesPromptArgument
-            if (providerConfig.UsesPromptArgument)
-            {
-                // Escape prompt for command line
-                var escapedPrompt = prompt.Replace("\"", "\\\"");
-                psi.Arguments = $"{providerConfig.Arguments} \"{escapedPrompt}\"";
-            }
-            else
-            {
-                psi.Arguments = providerConfig.Arguments;
-            }
-
-            using var process = Process.Start(psi);
-            if (process == null)
-            {
-                return new AgentProcessResult { Success = false, Error = "Failed to start AI process" };
-            }
-
-            // Write prompt to stdin if applicable
-            if (providerConfig.UsesStdin)
-            {
-                await process.StandardInput.WriteAsync(prompt);
-                process.StandardInput.Close();
-            }
-            else if (!providerConfig.UsesPromptArgument)
-            {
-                await process.StandardInput.WriteAsync(prompt);
-                process.StandardInput.Close();
-            }
-
-            // Read output — stream stdout line-by-line to parse stream-json and
-            // emit only meaningful text, avoiding raw JSON flooding the TUI.
-            var outputBuilder = new StringBuilder();
-            var textBuilder = new StringBuilder();  // Accumulated parsed text
-            var lastProgressAt = DateTime.UtcNow;
-            var usesStreamJson = providerConfig.UsesStreamJson;
-
-            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-
-            // Read stdout line by line
-            while (!process.StandardOutput.EndOfStream)
-            {
-                var line = await process.StandardOutput.ReadLineAsync(cancellationToken);
-                if (line == null) break;
-
-                outputBuilder.AppendLine(line);
-                Statistics.OutputChars += line.Length;
-
-                if (usesStreamJson)
-                {
-                    // Parse stream-json to extract text deltas
-                    var text = ParseStreamJsonLine(line);
-                    if (text != null)
-                    {
-                        textBuilder.Append(text);
-                    }
-                }
-                else if (!string.IsNullOrWhiteSpace(line))
-                {
-                    // Non-stream-json providers: forward non-empty lines directly
-                    textBuilder.AppendLine(line);
-                }
-
-                // Emit a progress heartbeat every 30 seconds so TUI shows activity
-                if ((DateTime.UtcNow - lastProgressAt).TotalSeconds >= 30)
-                {
-                    lastProgressAt = DateTime.UtcNow;
-                    var charsSoFar = textBuilder.Length;
-                    OnOutput?.Invoke($"Working... ({charsSoFar:N0} chars of output so far)");
-                }
-            }
-
-            await process.WaitForExitAsync(cancellationToken);
-
-            var output = outputBuilder.ToString();
-            var error = await stderrTask;
-
-            // Emit a summary of the parsed text output (last few meaningful lines)
-            var parsedText = textBuilder.ToString().Trim();
-            if (!string.IsNullOrEmpty(parsedText))
-            {
-                // Show last meaningful line as a completion indicator
-                var lastLines = parsedText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                if (lastLines.Length > 0)
-                {
-                    var lastLine = lastLines[^1].Trim();
-                    if (lastLine.Length > 200) lastLine = lastLine[..200] + "...";
-                    OnOutput?.Invoke(lastLine);
-                }
-            }
-
-            if (!string.IsNullOrEmpty(error))
-            {
-                Statistics.ErrorChars += error.Length;
-            }
-
-            // Get modified files
-            var modifiedFiles = _teamConfig.UseWorktrees
-                ? await _gitManager.GetModifiedFilesAsync(_worktreePath, cancellationToken)
-                : new List<string>();
-
-            return new AgentProcessResult
-            {
-                Success = process.ExitCode == 0,
-                Output = output,
-                Error = error,
-                FilesModified = modifiedFiles
-            };
+            result.FilesModified = await _gitManager.GetModifiedFilesAsync(_worktreePath, cancellationToken);
         }
-        catch (Exception ex)
-        {
-            return new AgentProcessResult { Success = false, Error = ex.Message };
-        }
-    }
 
-    /// <summary>
-    /// Parse a line of stream-json output to extract text content.
-    /// Returns the text delta or null if the line isn't a text event.
-    /// </summary>
-    private static string? ParseStreamJsonLine(string line)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("{"))
-                return null;
-
-            using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
-
-            // Claude stream-json: {"type":"stream_event","event":{"type":"content_block_delta","delta":{"text":"..."}}}
-            if (root.TryGetProperty("type", out var typeEl) && typeEl.GetString() == "stream_event")
-            {
-                if (root.TryGetProperty("event", out var eventEl))
-                {
-                    if (eventEl.TryGetProperty("type", out var eventTypeEl) &&
-                        eventTypeEl.GetString() == "content_block_delta")
-                    {
-                        if (eventEl.TryGetProperty("delta", out var deltaEl) &&
-                            deltaEl.TryGetProperty("text", out var textEl))
-                        {
-                            return textEl.GetString();
-                        }
-                    }
-                }
-            }
-
-            // Gemini stream-json: similar structure
-            if (root.TryGetProperty("text", out var directTextEl))
-            {
-                return directTextEl.GetString();
-            }
-
-            return null;
-        }
-        catch
-        {
-            return null;
-        }
+        return result;
     }
 
     public void Dispose()
@@ -1069,13 +882,3 @@ public class TeamAgent : IDisposable
     }
 }
 
-/// <summary>
-/// Result from AI process in team agent
-/// </summary>
-internal class AgentProcessResult
-{
-    public bool Success { get; set; }
-    public string Output { get; set; } = "";
-    public string Error { get; set; } = "";
-    public List<string>? FilesModified { get; set; }
-}

@@ -1702,6 +1702,29 @@ else if (teamsMode)
         _ => MergeStrategy.Sequential
     };
 
+    // Execution mode: lead-driven (sequential, 3-tier) vs parallel
+    var modeChoice = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("[yellow]Execution mode:[/]")
+            .AddChoices(
+                "Parallel (agents run concurrently)",
+                "Lead-driven (sequential, 3-tier: Plan/Code/Verify)"));
+
+    var leadDriven = modeChoice.StartsWith("Lead");
+
+    // Verify command (only for lead-driven mode)
+    string? verifyCommand = null;
+    if (leadDriven)
+    {
+        var wantsVerify = AnsiConsole.Confirm("[yellow]Add a verify command (e.g., dotnet build)?[/]", false);
+        if (wantsVerify)
+        {
+            verifyCommand = AnsiConsole.Prompt(
+                new TextPrompt<string>("[yellow]Verify command:[/]")
+                    .DefaultValue("dotnet build"));
+        }
+    }
+
     teamConfig = new TeamConfig
     {
         AgentCount = agentCount,
@@ -1710,7 +1733,9 @@ else if (teamsMode)
         ModelAssignment = modelAssignment,
         DecompositionStrategy = decomposition,
         MergeStrategy = mergeStrategy,
-        UseWorktrees = true
+        UseWorktrees = true,
+        LeadDriven = leadDriven,
+        VerifyCommand = verifyCommand
     };
 
     projectSettings.Teams = teamConfig;
@@ -1723,8 +1748,11 @@ else if (teamsMode)
         AgentModelAssignment.RoundRobin => string.Join(" → ", agentModels.Select(m => m.DisplayName)),
         _ => leadModel.DisplayName
     };
+    var modeLabel = leadDriven ? "Lead-driven (sequential)" : "Parallel";
     AnsiConsole.MarkupLine($"[green]Teams:[/] {agentCount} agents, Lead: {Markup.Escape(leadModel.DisplayName)}, Sub-agents: {Markup.Escape(teamModelNames)}");
-    AnsiConsole.MarkupLine($"[green]Strategy:[/] {decomposition}, Merge: {mergeStrategy}");
+    AnsiConsole.MarkupLine($"[green]Mode:[/] {modeLabel}, Strategy: {decomposition}, Merge: {mergeStrategy}");
+    if (!string.IsNullOrEmpty(verifyCommand))
+        AnsiConsole.MarkupLine($"[green]Verify:[/] {Markup.Escape(verifyCommand)}");
 }
 else if (!teamsMode && !freshMode && projectSettings.Teams?.IsEnabled == true)
 {

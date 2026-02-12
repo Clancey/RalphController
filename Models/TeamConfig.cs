@@ -61,6 +61,13 @@ public record TeamConfig
     /// <summary>Whether to isolate agents in git worktrees (default true)</summary>
     public bool UseWorktrees { get; init; } = true;
 
+    /// <summary>
+    /// Delegate mode: lead coordinates only, cannot edit files.
+    /// When enabled, lead can only spawn/shutdown agents, send messages,
+    /// manage tasks, and review/approve plans.
+    /// </summary>
+    public bool DelegateMode { get; init; } = false;
+
     /// <summary>Teams mode is enabled</summary>
     [JsonIgnore]
     public bool IsEnabled => AgentCount > 1;

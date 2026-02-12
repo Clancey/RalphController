@@ -48,15 +48,15 @@
 - [?] Store mailboxes at `~/.ralph/teams/{team}/mailbox/{agent-id}.jsonl`
 
 ## High Priority — Orchestration (spec: orchestration.md)
-- [ ] Rename/rewrite `TeamController.cs` → `TeamOrchestrator.cs`
-- [ ] Replace 3-phase sequential model with continuous coordination loop
-- [ ] Implement `CoordinateAsync()` — poll messages, monitor agents, handle events, detect completion
-- [ ] Implement plan approval flow — lead evaluates PlanSubmission via AI and responds
-- [ ] Implement stuck agent detection — alert if Working > 2x avg task time with no messages
+- [?] Rename/rewrite `TeamController.cs` → `TeamOrchestrator.cs`
+- [?] Replace 3-phase sequential model with continuous coordination loop
+- [?] Implement `CoordinateAsync()` — poll messages, monitor agents, handle events, detect completion
+- [?] Implement plan approval flow — lead evaluates PlanSubmission via AI and responds
+- [?] Implement stuck agent detection — alert if Working > 2x avg task time with no messages
 - [ ] Implement task reassignment — move tasks from stuck/crashed agents to idle agents
 - [ ] Implement delegate mode — restrict lead to coordination-only (no file edits)
-- [ ] Implement result synthesis — collect task results and produce summary report
-- [ ] Add dynamic task management: `AddTask()`, `ReassignTask()`, `CancelTask()` during execution
+- [?] Implement result synthesis — collect task results and produce summary report
+- [?] Add dynamic task management: `AddTask()`, `ReassignTask()`, `CancelTask()` during execution
 - [ ] Wire orchestrator into `Program.cs` replacing TeamController usage
 
 ## Medium Priority — Merge & Conflicts (spec: merge-and-conflicts.md)
@@ -84,7 +84,7 @@
 
 ## Low Priority — Storage & Config
 - [ ] Create `~/.ralph/teams/{team}/config.json` team config with members array
-- [ ] Add `DelegateMode` flag to TeamConfig
+- [x] Add `DelegateMode` flag to TeamConfig
 - [ ] Add `RequirePlanApproval` per-agent setting to TeamConfig
 - [ ] Team cleanup: remove worktrees, task files, mailbox, team config
 

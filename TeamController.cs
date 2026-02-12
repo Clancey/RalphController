@@ -389,6 +389,14 @@ public class TeamController : IDisposable
     {
         OnOutput?.Invoke($"Phase 2: Starting {_teamConfig.AgentCount} agents...");
 
+        // Clean up stale worktrees from interrupted previous runs
+        if (_teamConfig.UseWorktrees)
+        {
+            var worktreeBaseDir = Path.Combine(_config.TargetDirectory, ".ralph-worktrees");
+            await _gitManager.CleanupStaleWorktreesAsync(worktreeBaseDir, cancellationToken);
+            OnOutput?.Invoke("Cleaned up stale worktrees from previous run");
+        }
+
         var agentTasks = new List<Task>();
 
         for (int i = 0; i < _teamConfig.AgentCount; i++)

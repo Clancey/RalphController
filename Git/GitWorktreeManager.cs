@@ -40,7 +40,9 @@ public class GitWorktreeManager : IDisposable
     }
 
     /// <summary>
-    /// Create a new worktree from a source branch
+    /// Create a new worktree from a source branch.
+    /// If a stale worktree already exists at the path (e.g. from a previous interrupted run),
+    /// it is automatically removed and recreated.
     /// </summary>
     public async Task<bool> CreateWorktreeAsync(
         string worktreePath,
@@ -54,28 +56,77 @@ public class GitWorktreeManager : IDisposable
             Directory.CreateDirectory(parentDir);
         }
 
-        var psi = new ProcessStartInfo
+        // If the worktree path already exists (stale from a previous run), clean it up first
+        if (Directory.Exists(worktreePath))
         {
-            FileName = "git",
-            Arguments = $"worktree add \"{worktreePath}\" -b {branchName} {sourceBranch}",
-            WorkingDirectory = _repositoryRoot,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
+            await RemoveWorktreeAsync(worktreePath, cancellationToken);
+        }
 
-        using var process = Process.Start(psi);
-        if (process == null) return false;
+        // Prune any broken worktree references before creating
+        await PruneAsync(cancellationToken);
 
-        await process.WaitForExitAsync(cancellationToken);
+        // Delete the branch if it already exists (stale from a previous run)
+        await RunGitCommandAsync(_repositoryRoot,
+            $"branch -D {branchName}",
+            cancellationToken);
 
-        if (process.ExitCode == 0)
+        var result = await RunGitCommandAsync(_repositoryRoot,
+            $"worktree add \"{worktreePath}\" -b {branchName} {sourceBranch}",
+            cancellationToken);
+
+        if (result.ExitCode == 0)
         {
             _worktrees[worktreePath] = branchName;
             return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Remove all ralph worktrees under the given base directory (e.g. .ralph-worktrees/).
+    /// Used on startup to clean up stale worktrees from interrupted runs.
+    /// </summary>
+    public async Task CleanupStaleWorktreesAsync(
+        string worktreeBaseDir,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(worktreeBaseDir))
+            return;
+
+        await PruneAsync(cancellationToken);
+
+        var dirs = Directory.GetDirectories(worktreeBaseDir, "team-*");
+        foreach (var dir in dirs)
+        {
+            try
+            {
+                // Try git worktree remove first (proper cleanup)
+                await RunGitCommandAsync(_repositoryRoot,
+                    $"worktree remove \"{dir}\" --force",
+                    cancellationToken);
+            }
+            catch
+            {
+                // Ignore errors — will fall through to directory delete
+            }
+
+            // Ensure directory is gone even if git command failed
+            if (Directory.Exists(dir))
+            {
+                try
+                {
+                    Directory.Delete(dir, recursive: true);
+                }
+                catch
+                {
+                    // Best-effort cleanup
+                }
+            }
+        }
+
+        // Final prune to clean up any remaining references
+        await PruneAsync(cancellationToken);
     }
 
     /// <summary>

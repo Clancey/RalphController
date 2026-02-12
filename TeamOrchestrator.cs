@@ -166,6 +166,14 @@ public class TeamOrchestrator : IDisposable
         OnOutput?.Invoke($"Spawning {_teamConfig.AgentCount} agents...");
         SetState(TeamOrchestratorState.Spawning);
 
+        // Clean up stale worktrees from interrupted previous runs
+        if (_teamConfig.UseWorktrees)
+        {
+            var worktreeBaseDir = Path.Combine(_config.TargetDirectory, ".ralph-worktrees");
+            await _gitManager.CleanupStaleWorktreesAsync(worktreeBaseDir, cancellationToken);
+            OnOutput?.Invoke("Cleaned up stale worktrees from previous run");
+        }
+
         var sourceBranch = _teamConfig.SourceBranch;
         if (string.IsNullOrEmpty(sourceBranch))
         {

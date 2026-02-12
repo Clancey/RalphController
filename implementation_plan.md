@@ -60,27 +60,27 @@
 - [?] Wire orchestrator into `Program.cs` replacing TeamController usage
 
 ## Medium Priority — Merge & Conflicts (spec: merge-and-conflicts.md)
-- [ ] Create `Merge/MergeManager.cs` with merge queue and file ownership tracking
-- [ ] Create `Merge/MergeStatus.cs` enum (Pending, Queued, Merging, Merged, ConflictDetected, Resolved, Failed)
-- [ ] Implement file ownership tracking (`Dictionary<string, string>` file→agentId) with overlap warnings
-- [ ] Implement incremental merging — merge completed tasks immediately, don't wait for all agents
-- [ ] Implement dependency-ordered merging (topological sort of DAG)
-- [ ] Improve conflict negotiation prompt to include task descriptions and intent
-- [ ] Add MergeStatus field to task model
-- [ ] Extract merge logic from GitWorktreeManager into MergeManager
+- [?] Create `Merge/MergeManager.cs` with merge queue and file ownership tracking
+- [?] Create `Merge/MergeStatus.cs` enum (Pending, Queued, Merging, Merged, ConflictDetected, Resolved, Failed)
+- [?] Implement file ownership tracking (`Dictionary<string, string>` file→agentId) with overlap warnings
+- [?] Implement incremental merging — merge completed tasks immediately, don't wait for all agents
+- [?] Implement dependency-ordered merging (topological sort of DAG)
+- [?] Improve conflict negotiation prompt to include task descriptions and intent
+- [?] Add MergeStatus field to task model
+- [?] Extract merge logic from GitWorktreeManager into MergeManager
 
 ## Medium Priority — TUI (spec: tui.md)
-- [ ] Create `TUI/TUIView.cs` enum: AgentList, AgentDetail, TaskList
-- [ ] Create `TUI/InputHandler.cs` for keyboard input (Shift+Up/Down, Enter, Escape, Ctrl+T)
-- [ ] Implement agent selection state with Shift+Up/Down cycling
-- [ ] Implement per-agent output buffers (separate from mixed log)
-- [ ] Implement Agent List View — agent list left, selected agent detail right
-- [ ] Implement Agent Detail View — full-screen output of selected agent (Enter to enter, Esc to exit)
-- [ ] Implement Task List View — table with ID, Title, Status, Agent, Deps (Ctrl+T toggle)
-- [ ] Add status bar — team name, agent count, task progress, elapsed time
-- [ ] Add user message input — type text to send message to selected agent
-- [ ] Wire TUI to events: `StateChanged`, `TaskCompleted`, `TaskUnblocked`, `OutputReceived`
-- [ ] Ensure all dynamic text uses `Markup.Escape()`
+- [?] Create `TUI/TUIView.cs` enum: AgentList, AgentDetail, TaskList
+- [?] Create `TUI/InputHandler.cs` for keyboard input (Shift+Up/Down, Enter, Escape, Ctrl+T)
+- [?] Implement agent selection state with Shift+Up/Down cycling
+- [?] Implement per-agent output buffers (separate from mixed log)
+- [?] Implement Agent List View — agent list left, selected agent detail right
+- [?] Implement Agent Detail View — full-screen output of selected agent (Enter to enter, Esc to exit)
+- [?] Implement Task List View — table with ID, Title, Status, Agent, Deps (Ctrl+T toggle)
+- [?] Add status bar — team name, agent count, task progress, elapsed time
+- [?] Add user message input — type text to send message to selected agent
+- [?] Wire TUI to events: `StateChanged`, `TaskCompleted`, `TaskUnblocked`, `OutputReceived`
+- [?] Ensure all dynamic text uses `Markup.Escape()`
 
 ## Low Priority — Storage & Config
 - [?] Create `~/.ralph/teams/{team}/config.json` team config with members array

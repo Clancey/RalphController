@@ -1160,12 +1160,15 @@ public class ConsoleUI : IDisposable
         {
             var stateColor = agent.State switch
             {
-                ParallelAgentState.Running => "green",
-                ParallelAgentState.Initializing => "yellow",
-                ParallelAgentState.Waiting => "cyan",
-                ParallelAgentState.Merging => "magenta",
-                ParallelAgentState.Failed => "red",
-                ParallelAgentState.Stopped => "grey",
+                AgentState.Working => "green",
+                AgentState.PlanningWork => "green",
+                AgentState.Claiming => "magenta",
+                AgentState.Spawning => "yellow",
+                AgentState.Ready => "cyan",
+                AgentState.Idle => "cyan",
+                AgentState.ShuttingDown => "yellow",
+                AgentState.Error => "red",
+                AgentState.Stopped => "grey",
                 _ => "dim"
             };
 

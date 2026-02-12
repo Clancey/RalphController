@@ -26,8 +26,8 @@
 - [x] Update decomposition parser to produce ID-based deps and resolve title references
 
 ## High Priority — Agent Lifecycle (spec: agent-lifecycle.md)
-- [ ] Define `AgentState` enum: Spawning, Ready, Claiming, Working, PlanningWork, Idle, ShuttingDown, Stopped, Error
-- [ ] Create `Models/AgentSpawnConfig.cs` with Name, Model, SpawnPrompt, RequirePlanApproval fields
+- [?] Define `AgentState` enum: Spawning, Ready, Claiming, Working, PlanningWork, Idle, ShuttingDown, Stopped, Error
+- [?] Create `Models/AgentSpawnConfig.cs` with Name, Model, SpawnPrompt, RequirePlanApproval fields
 - [ ] Rewrite `TeamAgent.cs` run loop — state machine with proper transitions and `StateChanged` event
 - [ ] Implement idle polling with exponential backoff (1s→30s), wake on `TaskUnblocked` event
 - [ ] Implement graceful shutdown protocol (request → finish current task → stop)

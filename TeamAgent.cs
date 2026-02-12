@@ -23,7 +23,7 @@ public class TeamAgent : IDisposable
     private bool _disposed;
 
     /// <summary>Agent state</summary>
-    public ParallelAgentState State { get; private set; } = ParallelAgentState.Idle;
+    public AgentState State { get; private set; } = AgentState.Idle;
 
     /// <summary>Statistics</summary>
     public AgentStatistics Statistics { get; }
@@ -32,7 +32,7 @@ public class TeamAgent : IDisposable
     public AgentTask? CurrentTask { get; private set; }
 
     // Events
-    public event Action<ParallelAgentState>? OnStateChanged;
+    public event Action<AgentState>? OnStateChanged;
     public event Action<AgentTask>? OnTaskStart;
     public event Action<AgentTask, TaskResult>? OnTaskComplete;
     public event Action<AgentTask, string>? OnTaskFailed;
@@ -78,7 +78,7 @@ public class TeamAgent : IDisposable
     {
         if (!_teamConfig.UseWorktrees) return true;
 
-        SetState(ParallelAgentState.Initializing);
+        SetState(AgentState.Spawning);
 
         var sourceBranch = _teamConfig.SourceBranch;
         if (string.IsNullOrEmpty(sourceBranch))
@@ -95,7 +95,7 @@ public class TeamAgent : IDisposable
         if (!created)
         {
             OnError?.Invoke($"Failed to create worktree at {_worktreePath}");
-            SetState(ParallelAgentState.Failed);
+            SetState(AgentState.Error);
             return false;
         }
 
@@ -111,7 +111,7 @@ public class TeamAgent : IDisposable
         CurrentTask = task;
         Statistics.CurrentTask = task;
         OnTaskStart?.Invoke(task);
-        SetState(ParallelAgentState.Running);
+        SetState(AgentState.Working);
 
         try
         {
@@ -175,7 +175,7 @@ public class TeamAgent : IDisposable
         CancellationToken cancellationToken = default)
     {
         _stopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        SetState(ParallelAgentState.Running);
+        SetState(AgentState.Working);
 
         try
         {
@@ -197,7 +197,7 @@ public class TeamAgent : IDisposable
         }
         finally
         {
-            SetState(ParallelAgentState.Stopped);
+            SetState(AgentState.Stopped);
         }
     }
 
@@ -211,7 +211,7 @@ public class TeamAgent : IDisposable
             return new MergeResult { Success = true };
         }
 
-        SetState(ParallelAgentState.Merging);
+        SetState(AgentState.Claiming);
         Statistics.MergesAttempted++;
 
         try
@@ -253,9 +253,9 @@ public class TeamAgent : IDisposable
         }
         finally
         {
-            if (State == ParallelAgentState.Merging)
+            if (State == AgentState.Claiming)
             {
-                SetState(ParallelAgentState.Stopped);
+                SetState(AgentState.Stopped);
             }
         }
     }
@@ -279,7 +279,7 @@ public class TeamAgent : IDisposable
         _stopCts?.Cancel();
     }
 
-    private void SetState(ParallelAgentState newState)
+    private void SetState(AgentState newState)
     {
         if (State != newState)
         {

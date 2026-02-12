@@ -1,29 +1,53 @@
 namespace RalphController.Models;
 
 /// <summary>
-/// State of a parallel agent
+/// Lifecycle state of a team agent, matching Claude Code agent-teams model.
+/// State transitions: Spawning → Ready → [Claiming → Working → Idle] (loop) → ShuttingDown → Stopped
+///                                                                         ↘ Error
 /// </summary>
-public enum ParallelAgentState
+public enum AgentState
 {
-    /// <summary>Agent not started</summary>
+    /// <summary>Agent process starting, loading context</summary>
+    Spawning,
+
+    /// <summary>Loaded and waiting for first task</summary>
+    Ready,
+
+    /// <summary>Attempting to claim a task from TaskStore</summary>
+    Claiming,
+
+    /// <summary>Executing a claimed task</summary>
+    Working,
+
+    /// <summary>In plan mode, waiting for lead approval (read-only)</summary>
+    PlanningWork,
+
+    /// <summary>No claimable tasks available; waiting for tasks to unblock</summary>
     Idle,
 
-    /// <summary>Setting up worktree and environment</summary>
-    Initializing,
+    /// <summary>Received shutdown request, finishing current work</summary>
+    ShuttingDown,
 
-    /// <summary>Actively working on a task</summary>
-    Running,
-
-    /// <summary>Waiting for merge slot or conflict resolution</summary>
-    Waiting,
-
-    /// <summary>Merging work back to main</summary>
-    Merging,
-
-    /// <summary>Agent stopped successfully</summary>
+    /// <summary>Cleanly exited</summary>
     Stopped,
 
-    /// <summary>Agent failed (will retry)</summary>
+    /// <summary>Unrecoverable error; requires lead intervention</summary>
+    Error
+}
+
+/// <summary>
+/// Legacy state enum for backwards compatibility during migration.
+/// Will be removed once all code is updated to use AgentState.
+/// </summary>
+[Obsolete("Use AgentState instead. This enum will be removed.")]
+public enum ParallelAgentState
+{
+    Idle,
+    Initializing,
+    Running,
+    Waiting,
+    Merging,
+    Stopped,
     Failed
 }
 
@@ -39,7 +63,7 @@ public class AgentStatistics
     public string Name { get; init; } = string.Empty;
 
     /// <summary>Current state</summary>
-    public ParallelAgentState State { get; set; }
+    public AgentState State { get; set; }
 
     /// <summary>Current task (if any)</summary>
     public AgentTask? CurrentTask { get; set; }

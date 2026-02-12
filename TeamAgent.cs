@@ -1,5 +1,6 @@
 using RalphController.Models;
 using RalphController.Git;
+using RalphController.Parallel;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -7,7 +8,8 @@ using System.Text.Json;
 namespace RalphController;
 
 /// <summary>
-/// Individual team agent running in isolated worktree with assigned model
+/// Individual team agent running in isolated worktree with assigned model.
+/// Implements state machine: Spawning → Ready → [Claiming → Working → Idle] (loop) → ShuttingDown → Stopped
 /// </summary>
 public class TeamAgent : IDisposable
 {
@@ -19,8 +21,16 @@ public class TeamAgent : IDisposable
     private readonly GitWorktreeManager _gitManager;
     private readonly int _agentIndex;
     private readonly ModelSpec? _assignedModel;
+    private readonly string? _spawnPrompt;
+    private TaskStore? _taskStore;
     private CancellationTokenSource? _stopCts;
+    private CancellationTokenSource? _forceStopCts;
+    private bool _shutdownRequested;
     private bool _disposed;
+    private readonly SemaphoreSlim _idleSignal = new(0);
+
+    /// <summary>Agent ID</summary>
+    public string AgentId => _agentId;
 
     /// <summary>Agent state</summary>
     public AgentState State { get; private set; } = AgentState.Idle;
@@ -31,6 +41,9 @@ public class TeamAgent : IDisposable
     /// <summary>Current task</summary>
     public AgentTask? CurrentTask { get; private set; }
 
+    /// <summary>Spawn prompt (task-specific context)</summary>
+    public string? SpawnPrompt => _spawnPrompt;
+
     // Events
     public event Action<AgentState>? OnStateChanged;
     public event Action<AgentTask>? OnTaskStart;
@@ -39,14 +52,20 @@ public class TeamAgent : IDisposable
     public event Action<string>? OnOutput;
     public event Action<string>? OnError;
     public event Action<List<GitConflict>>? OnConflictDetected;
+    public event Action<TeamAgent>? OnIdle;
+    public event Action<TeamAgent>? OnStopped;
 
+    /// <summary>
+    /// Create a new team agent
+    /// </summary>
     public TeamAgent(
         RalphConfig config,
         TeamConfig teamConfig,
         string agentId,
         int agentIndex,
         GitWorktreeManager gitManager,
-        ModelSpec? assignedModel = null)
+        ModelSpec? assignedModel = null,
+        string? spawnPrompt = null)
     {
         _config = config;
         _teamConfig = teamConfig;
@@ -54,6 +73,7 @@ public class TeamAgent : IDisposable
         _agentIndex = agentIndex;
         _gitManager = gitManager;
         _assignedModel = assignedModel ?? teamConfig.GetAgentModel(agentIndex);
+        _spawnPrompt = spawnPrompt;
 
         _branchName = $"team-agent-{agentId}-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
         _worktreePath = teamConfig.UseWorktrees
@@ -69,6 +89,57 @@ public class TeamAgent : IDisposable
             BranchName = _branchName,
             AssignedModel = _assignedModel
         };
+    }
+
+    /// <summary>
+    /// Create a team agent from spawn configuration
+    /// </summary>
+    public static TeamAgent FromConfig(
+        AgentSpawnConfig spawnConfig,
+        RalphConfig config,
+        TeamConfig teamConfig,
+        GitWorktreeManager gitManager)
+    {
+        return new TeamAgent(
+            config,
+            teamConfig,
+            Guid.NewGuid().ToString("N")[..8],
+            spawnConfig.AgentIndex,
+            gitManager,
+            spawnConfig.Model,
+            spawnConfig.SpawnPrompt);
+    }
+
+    /// <summary>
+    /// Set the task store for this agent (required for RunAsync)
+    /// </summary>
+    public void SetTaskStore(TaskStore taskStore)
+    {
+        _taskStore = taskStore;
+        _taskStore.TaskUnblocked += OnTaskUnblocked;
+    }
+
+    private void OnTaskUnblocked(AgentTask task)
+    {
+        _idleSignal.Release();
+    }
+
+    /// <summary>
+    /// Request graceful shutdown. Agent will finish current task before stopping.
+    /// </summary>
+    public void RequestShutdown()
+    {
+        _shutdownRequested = true;
+        _idleSignal.Release();
+    }
+
+    /// <summary>
+    /// Force stop the agent immediately (used after RequestShutdown timeout).
+    /// </summary>
+    public void ForceStop()
+    {
+        _forceStopCts?.Cancel();
+        _stopCts?.Cancel();
     }
 
     /// <summary>
@@ -168,36 +239,141 @@ public class TeamAgent : IDisposable
     }
 
     /// <summary>
-    /// Run the agent in a loop, claiming tasks from the queue
+    /// Run the agent in a loop, claiming tasks from the queue.
+    /// Uses TaskStore if set, otherwise uses the claimTask callback.
+    /// Implements state machine: Ready → [Claiming → Working → Idle] (loop) → ShuttingDown → Stopped
     /// </summary>
     public async Task RunLoopAsync(
-        Func<string, AgentTask?> claimTask,
+        Func<string, AgentTask?>? claimTask = null,
         CancellationToken cancellationToken = default)
     {
         _stopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        SetState(AgentState.Working);
+        _forceStopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        
+        SetState(AgentState.Ready);
 
         try
         {
-            while (!_stopCts.Token.IsCancellationRequested)
+            while (!_stopCts.Token.IsCancellationRequested && !_shutdownRequested)
             {
-                var task = claimTask(_agentId);
-                if (task == null)
+                if (_shutdownRequested)
                 {
-                    // No more tasks available
+                    SetState(AgentState.ShuttingDown);
                     break;
                 }
 
+                SetState(AgentState.Claiming);
+                
+                AgentTask? task;
+                if (_taskStore != null)
+                {
+                    task = _taskStore.TryClaim(_agentId);
+                }
+                else if (claimTask != null)
+                {
+                    task = claimTask(_agentId);
+                }
+                else
+                {
+                    OnError?.Invoke("No TaskStore or claimTask callback provided");
+                    SetState(AgentState.Error);
+                    return;
+                }
+
+                if (task == null)
+                {
+                    var stats = _taskStore?.GetStatistics();
+                    if (stats != null && stats.Pending == 0 && stats.InProgress == 0)
+                    {
+                        OnOutput?.Invoke("All tasks resolved");
+                        OnIdle?.Invoke(this);
+                        SetState(AgentState.Idle);
+                        await WaitForShutdownOrNewWork(_stopCts.Token);
+                        continue;
+                    }
+                    else if (stats != null && stats.Pending > 0)
+                    {
+                        SetState(AgentState.Idle);
+                        OnIdle?.Invoke(this);
+                        await WaitForClaimableTask(_stopCts.Token);
+                        continue;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                SetState(AgentState.Working);
                 await ExecuteTaskAsync(task, _stopCts.Token);
             }
         }
         catch (OperationCanceledException)
         {
-            // Normal cancellation
         }
         finally
         {
             SetState(AgentState.Stopped);
+            OnStopped?.Invoke(this);
+        }
+    }
+
+    /// <summary>
+    /// Wait for a claimable task with exponential backoff (1s → 30s).
+    /// Wakes immediately when TaskUnblocked event fires.
+    /// </summary>
+    private async Task WaitForClaimableTask(CancellationToken cancellationToken)
+    {
+        var delay = TimeSpan.FromSeconds(1);
+        var maxDelay = TimeSpan.FromSeconds(30);
+
+        while (!cancellationToken.IsCancellationRequested && !_shutdownRequested)
+        {
+            if (_taskStore?.GetClaimable().Count > 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await _idleSignal.WaitAsync(delay, cancellationToken);
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (TimeoutException)
+            {
+            }
+
+            delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, maxDelay.Ticks));
+        }
+    }
+
+    /// <summary>
+    /// Wait for shutdown request or new work to become available.
+    /// </summary>
+    private async Task WaitForShutdownOrNewWork(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested && !_shutdownRequested)
+        {
+            if (_taskStore?.GetClaimable().Count > 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await _idleSignal.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (TimeoutException)
+            {
+            }
         }
     }
 
@@ -292,6 +468,14 @@ public class TeamAgent : IDisposable
     private string BuildTaskPrompt(AgentTask task)
     {
         var promptBuilder = new System.Text.StringBuilder();
+
+        // Add spawn prompt first (task-specific context from orchestrator)
+        if (!string.IsNullOrEmpty(_spawnPrompt))
+        {
+            promptBuilder.AppendLine("--- SPAWN CONTEXT ---");
+            promptBuilder.AppendLine(_spawnPrompt);
+            promptBuilder.AppendLine();
+        }
 
         // Read the main prompt file
         // When RalphFolder is set, project files are in a shared location (not per-worktree)
@@ -549,8 +733,16 @@ public class TeamAgent : IDisposable
         if (_disposed) return;
         _disposed = true;
 
+        if (_taskStore != null)
+        {
+            _taskStore.TaskUnblocked -= OnTaskUnblocked;
+        }
+
         _stopCts?.Cancel();
         _stopCts?.Dispose();
+        _forceStopCts?.Cancel();
+        _forceStopCts?.Dispose();
+        _idleSignal?.Dispose();
 
         GC.SuppressFinalize(this);
     }

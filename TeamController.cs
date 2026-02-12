@@ -1,4 +1,5 @@
 using RalphController.Models;
+using RalphController.Merge;
 using RalphController.Parallel;
 using RalphController.Git;
 using System.Collections.Concurrent;
@@ -18,6 +19,7 @@ public class TeamController : IDisposable
     private readonly TaskStore _taskStore;
     private readonly GitWorktreeManager _gitManager;
     private readonly ConflictNegotiator _negotiator;
+    private readonly MergeManager _mergeManager;
     private readonly ConcurrentDictionary<string, TeamAgent> _agents = new();
     private readonly SemaphoreSlim _mergeSemaphore;
     private CancellationTokenSource? _stopCts;
@@ -47,6 +49,7 @@ public class TeamController : IDisposable
             TimeSpan.FromSeconds(_teamConfig.TaskClaimTimeoutSeconds));
         _gitManager = new GitWorktreeManager(config.TargetDirectory);
         _negotiator = new ConflictNegotiator(config, config.ProviderConfig);
+        _mergeManager = new MergeManager(_gitManager, _negotiator, _taskStore, _teamConfig);
         _mergeSemaphore = new SemaphoreSlim(_teamConfig.MaxConcurrentMerges);
     }
 
@@ -394,6 +397,7 @@ public class TeamController : IDisposable
             var assignedModel = _teamConfig.GetAgentModel(i);
 
             var agent = new TeamAgent(_config, _teamConfig, agentId, i, _gitManager, assignedModel);
+            agent.SetMergeManager(_mergeManager);
 
             // Wire events
             agent.OnStateChanged += _ => OnAgentUpdate?.Invoke(agent.Statistics);

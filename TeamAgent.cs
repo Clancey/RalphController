@@ -1,5 +1,6 @@
 using RalphController.Models;
 using RalphController.Git;
+using RalphController.Merge;
 using RalphController.Parallel;
 using RalphController.Messaging;
 using System.Diagnostics;
@@ -25,6 +26,7 @@ public class TeamAgent : IDisposable
     private readonly string? _spawnPrompt;
     private TaskStore? _taskStore;
     private MessageBus? _messageBus;
+    private MergeManager? _mergeManager;
     private CancellationTokenSource? _stopCts;
     private CancellationTokenSource? _forceStopCts;
     private bool _shutdownRequested;
@@ -141,6 +143,14 @@ public class TeamAgent : IDisposable
     public void SetMessageBus(MessageBus messageBus)
     {
         _messageBus = messageBus;
+    }
+
+    /// <summary>
+    /// Set the merge manager for this agent (required for merge operations)
+    /// </summary>
+    public void SetMergeManager(MergeManager mergeManager)
+    {
+        _mergeManager = mergeManager;
     }
 
     private void OnTaskUnblocked(AgentTask task)
@@ -628,19 +638,28 @@ public class TeamAgent : IDisposable
                 targetBranch = await _gitManager.GetCurrentBranchAsync(cancellationToken);
             }
 
+            if (_mergeManager == null)
+            {
+                return new MergeResult
+                {
+                    Success = false,
+                    Error = "MergeManager not configured for this agent"
+                };
+            }
+
             MergeResult result;
             switch (_teamConfig.MergeStrategy)
             {
                 case MergeStrategy.RebaseThenMerge:
-                    result = await _gitManager.RebaseAndMergeAsync(
+                    result = await _mergeManager.RebaseAndMergeAsync(
                         _worktreePath, _branchName, targetBranch, cancellationToken);
                     break;
                 case MergeStrategy.MergeDirect:
-                    result = await _gitManager.MergeDirectAsync(
+                    result = await _mergeManager.MergeDirectAsync(
                         _worktreePath, _branchName, targetBranch, cancellationToken);
                     break;
                 default:
-                    result = await _gitManager.SequentialMergeAsync(
+                    result = await _mergeManager.SequentialMergeAsync(
                         _worktreePath, _branchName, targetBranch, cancellationToken);
                     break;
             }

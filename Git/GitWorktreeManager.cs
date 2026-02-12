@@ -12,6 +12,11 @@ public class GitWorktreeManager : IDisposable
     private readonly Dictionary<string, string> _worktrees = new();
     private bool _disposed;
 
+    /// <summary>
+    /// The root directory of the git repository.
+    /// </summary>
+    public string RepositoryRoot => _repositoryRoot;
+
     public GitWorktreeManager(string repositoryRoot)
     {
         _repositoryRoot = repositoryRoot;
@@ -71,131 +76,6 @@ public class GitWorktreeManager : IDisposable
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// Rebase worktree branch onto target branch, then merge
-    /// </summary>
-    public async Task<MergeResult> RebaseAndMergeAsync(
-        string worktreePath,
-        string branchName,
-        string targetBranch,
-        CancellationToken cancellationToken = default)
-    {
-        var rebaseResult = await RunGitCommandAsync(worktreePath,
-            $"rebase {targetBranch}",
-            cancellationToken);
-
-        if (rebaseResult.ExitCode != 0)
-        {
-            var conflicts = DetectConflicts(worktreePath);
-            if (conflicts.Count > 0)
-            {
-                return new MergeResult
-                {
-                    Success = false,
-                    Conflicts = conflicts,
-                    Error = "Rebase conflicts detected"
-                };
-            }
-            return new MergeResult
-            {
-                Success = false,
-                Error = $"Rebase failed: {rebaseResult.Error}"
-            };
-        }
-
-        var mergeResult = await RunGitCommandAsync(_repositoryRoot,
-            $"merge {branchName} --no-ff",
-            cancellationToken);
-
-        if (mergeResult.ExitCode != 0)
-        {
-            var conflicts = DetectConflicts(_repositoryRoot);
-            if (conflicts.Count > 0)
-            {
-                return new MergeResult
-                {
-                    Success = false,
-                    Conflicts = conflicts,
-                    Error = "Merge conflicts detected"
-                };
-            }
-            return new MergeResult
-            {
-                Success = false,
-                Error = $"Merge failed: {mergeResult.Error}"
-            };
-        }
-
-        var shaResult = await RunGitCommandAsync(_repositoryRoot,
-            "rev-parse HEAD",
-            cancellationToken);
-
-        await RunGitCommandAsync(_repositoryRoot,
-            $"branch -D {branchName}",
-            cancellationToken);
-
-        return new MergeResult
-        {
-            Success = true,
-            MergeCommitSha = shaResult.Output.Trim()
-        };
-    }
-
-    /// <summary>
-    /// Direct merge (no rebase)
-    /// </summary>
-    public async Task<MergeResult> MergeDirectAsync(
-        string worktreePath,
-        string branchName,
-        string targetBranch,
-        CancellationToken cancellationToken = default)
-    {
-        await RunGitCommandAsync(_repositoryRoot,
-            $"checkout {targetBranch}",
-            cancellationToken);
-
-        var result = await RunGitCommandAsync(_repositoryRoot,
-            $"merge {branchName}",
-            cancellationToken);
-
-        if (result.ExitCode != 0)
-        {
-            var conflicts = DetectConflicts(_repositoryRoot);
-            return new MergeResult
-            {
-                Success = false,
-                Conflicts = conflicts,
-                Error = $"Merge failed: {result.Error}"
-            };
-        }
-
-        var shaResult = await RunGitCommandAsync(_repositoryRoot,
-            "rev-parse HEAD",
-            cancellationToken);
-
-        await RunGitCommandAsync(_repositoryRoot,
-            $"branch -D {branchName}",
-            cancellationToken);
-
-        return new MergeResult
-        {
-            Success = true,
-            MergeCommitSha = shaResult.Output.Trim()
-        };
-    }
-
-    /// <summary>
-    /// Sequential merge (one at a time, with rebase)
-    /// </summary>
-    public async Task<MergeResult> SequentialMergeAsync(
-        string worktreePath,
-        string branchName,
-        string targetBranch,
-        CancellationToken cancellationToken = default)
-    {
-        return await RebaseAndMergeAsync(worktreePath, branchName, targetBranch, cancellationToken);
     }
 
     /// <summary>
@@ -283,55 +163,9 @@ public class GitWorktreeManager : IDisposable
     }
 
     /// <summary>
-    /// Detect conflicts in a directory
+    /// Run a git command in the specified working directory.
     /// </summary>
-    public List<GitConflict> DetectConflicts(string directory)
-    {
-        var conflicts = new List<GitConflict>();
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = "git",
-            Arguments = "diff --name-only --diff-filter=U",
-            WorkingDirectory = directory,
-            RedirectStandardOutput = true,
-            UseShellExecute = false
-        };
-
-        using var process = Process.Start(psi);
-        if (process == null) return conflicts;
-
-        var output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit();
-
-        var conflictedFiles = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-
-        foreach (var file in conflictedFiles)
-        {
-            var filePath = Path.Combine(directory, file.Trim());
-            if (File.Exists(filePath))
-            {
-                conflicts.Add(new GitConflict
-                {
-                    FilePath = file.Trim(),
-                    FullPath = filePath
-                });
-            }
-        }
-
-        return conflicts;
-    }
-
-    /// <summary>
-    /// Abort a rebase in progress
-    /// </summary>
-    public async Task<bool> AbortRebaseAsync(string worktreePath, CancellationToken cancellationToken = default)
-    {
-        var result = await RunGitCommandAsync(worktreePath, "rebase --abort", cancellationToken);
-        return result.ExitCode == 0;
-    }
-
-    private async Task<GitCommandResult> RunGitCommandAsync(
+    public async Task<GitCommandResult> RunGitCommandAsync(
         string workingDirectory,
         string arguments,
         CancellationToken cancellationToken = default)
@@ -416,7 +250,7 @@ public class GitConflict
 /// <summary>
 /// Result of a git command
 /// </summary>
-internal class GitCommandResult
+public class GitCommandResult
 {
     public int ExitCode { get; set; }
     public string Output { get; set; } = "";

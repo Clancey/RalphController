@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using RalphController.Git;
 using RalphController.Models;
 using RalphController.Parallel;
@@ -453,6 +454,186 @@ public class MergeManager : IDisposable
         return result;
     }
 
+    // --- Merge strategy implementations ---
+
+    /// <summary>
+    /// Rebase worktree branch onto target branch, then merge.
+    /// </summary>
+    public async Task<MergeResult> RebaseAndMergeAsync(
+        string worktreePath,
+        string branchName,
+        string targetBranch,
+        CancellationToken cancellationToken = default)
+    {
+        var repositoryRoot = _worktrees.RepositoryRoot;
+
+        var rebaseResult = await _worktrees.RunGitCommandAsync(worktreePath,
+            $"rebase {targetBranch}",
+            cancellationToken);
+
+        if (rebaseResult.ExitCode != 0)
+        {
+            var conflicts = DetectConflicts(worktreePath);
+            if (conflicts.Count > 0)
+            {
+                return new MergeResult
+                {
+                    Success = false,
+                    Conflicts = conflicts,
+                    Error = "Rebase conflicts detected"
+                };
+            }
+            return new MergeResult
+            {
+                Success = false,
+                Error = $"Rebase failed: {rebaseResult.Error}"
+            };
+        }
+
+        var mergeResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
+            $"merge {branchName} --no-ff",
+            cancellationToken);
+
+        if (mergeResult.ExitCode != 0)
+        {
+            var conflicts = DetectConflicts(repositoryRoot);
+            if (conflicts.Count > 0)
+            {
+                return new MergeResult
+                {
+                    Success = false,
+                    Conflicts = conflicts,
+                    Error = "Merge conflicts detected"
+                };
+            }
+            return new MergeResult
+            {
+                Success = false,
+                Error = $"Merge failed: {mergeResult.Error}"
+            };
+        }
+
+        var shaResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
+            "rev-parse HEAD",
+            cancellationToken);
+
+        await _worktrees.RunGitCommandAsync(repositoryRoot,
+            $"branch -D {branchName}",
+            cancellationToken);
+
+        return new MergeResult
+        {
+            Success = true,
+            MergeCommitSha = shaResult.Output.Trim()
+        };
+    }
+
+    /// <summary>
+    /// Direct merge (no rebase).
+    /// </summary>
+    public async Task<MergeResult> MergeDirectAsync(
+        string worktreePath,
+        string branchName,
+        string targetBranch,
+        CancellationToken cancellationToken = default)
+    {
+        var repositoryRoot = _worktrees.RepositoryRoot;
+
+        await _worktrees.RunGitCommandAsync(repositoryRoot,
+            $"checkout {targetBranch}",
+            cancellationToken);
+
+        var result = await _worktrees.RunGitCommandAsync(repositoryRoot,
+            $"merge {branchName}",
+            cancellationToken);
+
+        if (result.ExitCode != 0)
+        {
+            var conflicts = DetectConflicts(repositoryRoot);
+            return new MergeResult
+            {
+                Success = false,
+                Conflicts = conflicts,
+                Error = $"Merge failed: {result.Error}"
+            };
+        }
+
+        var shaResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
+            "rev-parse HEAD",
+            cancellationToken);
+
+        await _worktrees.RunGitCommandAsync(repositoryRoot,
+            $"branch -D {branchName}",
+            cancellationToken);
+
+        return new MergeResult
+        {
+            Success = true,
+            MergeCommitSha = shaResult.Output.Trim()
+        };
+    }
+
+    /// <summary>
+    /// Sequential merge (one at a time, with rebase).
+    /// </summary>
+    public async Task<MergeResult> SequentialMergeAsync(
+        string worktreePath,
+        string branchName,
+        string targetBranch,
+        CancellationToken cancellationToken = default)
+    {
+        return await RebaseAndMergeAsync(worktreePath, branchName, targetBranch, cancellationToken);
+    }
+
+    /// <summary>
+    /// Detect conflicts in a directory by inspecting git's unmerged paths.
+    /// </summary>
+    public List<GitConflict> DetectConflicts(string directory)
+    {
+        var conflicts = new List<GitConflict>();
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = "diff --name-only --diff-filter=U",
+            WorkingDirectory = directory,
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        };
+
+        using var process = Process.Start(psi);
+        if (process == null) return conflicts;
+
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+
+        var conflictedFiles = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var file in conflictedFiles)
+        {
+            var filePath = Path.Combine(directory, file.Trim());
+            if (File.Exists(filePath))
+            {
+                conflicts.Add(new GitConflict
+                {
+                    FilePath = file.Trim(),
+                    FullPath = filePath
+                });
+            }
+        }
+
+        return conflicts;
+    }
+
+    /// <summary>
+    /// Abort a rebase in progress.
+    /// </summary>
+    public async Task<bool> AbortRebaseAsync(string worktreePath, CancellationToken cancellationToken = default)
+    {
+        var result = await _worktrees.RunGitCommandAsync(worktreePath, "rebase --abort", cancellationToken);
+        return result.ExitCode == 0;
+    }
+
     // --- Private helpers ---
 
     /// <summary>
@@ -556,11 +737,11 @@ public class MergeManager : IDisposable
 
         return _teamConfig.MergeStrategy switch
         {
-            MergeStrategy.RebaseThenMerge => await _worktrees.RebaseAndMergeAsync(
+            MergeStrategy.RebaseThenMerge => await RebaseAndMergeAsync(
                 worktreePath, branchName, targetBranch, ct),
-            MergeStrategy.MergeDirect => await _worktrees.MergeDirectAsync(
+            MergeStrategy.MergeDirect => await MergeDirectAsync(
                 worktreePath, branchName, targetBranch, ct),
-            _ => await _worktrees.SequentialMergeAsync(
+            _ => await SequentialMergeAsync(
                 worktreePath, branchName, targetBranch, ct)
         };
     }

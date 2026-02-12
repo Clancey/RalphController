@@ -1,4 +1,5 @@
 using RalphController.Models;
+using RalphController.Merge;
 using RalphController.Parallel;
 using RalphController.Git;
 using RalphController.Messaging;
@@ -18,6 +19,7 @@ public class TeamOrchestrator : IDisposable
     private readonly TaskStore _taskStore;
     private readonly GitWorktreeManager _gitManager;
     private readonly ConflictNegotiator _negotiator;
+    private readonly MergeManager _mergeManager;
     private readonly ConcurrentDictionary<string, TeamAgent> _agents = new();
     private readonly ConcurrentDictionary<string, AgentMonitorInfo> _agentMonitor = new();
     private readonly SemaphoreSlim _mergeSemaphore;
@@ -55,6 +57,7 @@ public class TeamOrchestrator : IDisposable
 
         _gitManager = new GitWorktreeManager(config.TargetDirectory);
         _negotiator = new ConflictNegotiator(config, config.ProviderConfig);
+        _mergeManager = new MergeManager(_gitManager, _negotiator, _taskStore, _teamConfig);
         _mergeSemaphore = new SemaphoreSlim(_teamConfig.MaxConcurrentMerges);
     }
 
@@ -183,6 +186,7 @@ public class TeamOrchestrator : IDisposable
                 _teamConfig.GetAgentModel(i));
 
             agent.SetTaskStore(_taskStore);
+            agent.SetMergeManager(_mergeManager);
 
             var mailboxDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

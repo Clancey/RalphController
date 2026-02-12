@@ -33,7 +33,7 @@
 - [?] Implement graceful shutdown protocol (request → finish current task → stop)
 - [?] Implement force-stop with 60s timeout fallback
 - [?] Add spawn prompt support — prepend task-specific context to agent AI prompt
-- [ ] Implement plan-before-implement mode (read-only tools, submit plan to lead, wait for approval)
+- [?] Implement plan-before-implement mode (read-only tools, submit plan to lead, wait for approval)
 - [?] Emit lifecycle events: `AgentSpawned`, `AgentIdle`, `AgentWorking`, `AgentStopped`, `AgentError`
 
 ## High Priority — Messaging (spec: messaging.md)

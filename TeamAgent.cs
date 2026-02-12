@@ -32,6 +32,9 @@ public class TeamAgent : IDisposable
     private bool _disposed;
     private readonly SemaphoreSlim _idleSignal = new(0);
     private readonly List<Message> _pendingContext = new();
+    private Message? _planApprovalResult;
+    private int _planRevisionCount;
+    private const int MaxPlanRevisions = 3;
 
     /// <summary>Agent ID</summary>
     public string AgentId => _agentId;
@@ -50,6 +53,9 @@ public class TeamAgent : IDisposable
 
     /// <summary>Message bus for inter-agent communication</summary>
     public MessageBus? MessageBus => _messageBus;
+
+    /// <summary>Whether this agent requires plan approval before implementation</summary>
+    public bool RequirePlanApproval { get; private set; }
 
     // Events
     public event Action<AgentState>? OnStateChanged;
@@ -114,7 +120,10 @@ public class TeamAgent : IDisposable
             spawnConfig.AgentIndex,
             gitManager,
             spawnConfig.Model,
-            spawnConfig.SpawnPrompt);
+            spawnConfig.SpawnPrompt)
+        {
+            RequirePlanApproval = spawnConfig.RequirePlanApproval
+        };
     }
 
     /// <summary>
@@ -383,6 +392,15 @@ public class TeamAgent : IDisposable
                     _messageBus?.Send(Message.ShutdownResponseMessage(_agentId, false, "Shutdown requested, finishing current task first"));
                 }
 
+                if (RequirePlanApproval)
+                {
+                    var planApproved = await RunPlanApprovalCycle(task, _stopCts.Token);
+                    if (!planApproved)
+                    {
+                        continue;
+                    }
+                }
+
                 SetState(AgentState.Working);
                 await ExecuteTaskAsync(task, _stopCts.Token);
             }
@@ -395,6 +413,123 @@ public class TeamAgent : IDisposable
             SetState(AgentState.Stopped);
             OnStopped?.Invoke(this);
         }
+    }
+
+    /// <summary>
+    /// Run the plan-before-implement cycle for a task.
+    /// Returns true if plan was approved, false if rejected or timed out.
+    /// </summary>
+    private async Task<bool> RunPlanApprovalCycle(AgentTask task, CancellationToken cancellationToken)
+    {
+        _planRevisionCount = 0;
+        
+        while (_planRevisionCount < MaxPlanRevisions && !cancellationToken.IsCancellationRequested)
+        {
+            SetState(AgentState.PlanningWork);
+            OnOutput?.Invoke($"Planning task: {task.Title ?? task.Description}");
+
+            var plan = await ProducePlanAsync(task, cancellationToken);
+            
+            _messageBus?.Send(Message.PlanSubmissionMessage(_agentId, plan, task.TaskId));
+            OnOutput?.Invoke("Plan submitted, waiting for approval...");
+
+            _planApprovalResult = await _messageBus?.WaitForMessage(MessageType.PlanApproval, TimeSpan.FromMinutes(10), cancellationToken)!;
+            
+            if (_planApprovalResult == null)
+            {
+                OnOutput?.Invoke("Plan approval timeout, proceeding with implementation");
+                return true;
+            }
+
+            var approved = _planApprovalResult.Metadata?.TryGetValue("approved", out var approvedStr) == true
+                && approvedStr == "true";
+
+            if (approved)
+            {
+                OnOutput?.Invoke("Plan approved");
+                return true;
+            }
+
+            var feedback = _planApprovalResult.Metadata?.GetValueOrDefault("feedback", "") ?? "";
+            OnOutput?.Invoke($"Plan rejected: {feedback}");
+            
+            _pendingContext.Add(_planApprovalResult);
+            _planRevisionCount++;
+        }
+
+        if (_planRevisionCount >= MaxPlanRevisions)
+        {
+            OnOutput?.Invoke($"Max plan revisions ({MaxPlanRevisions}) reached, proceeding with last plan");
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Produce an implementation plan for a task (read-only analysis).
+    /// </summary>
+    private async Task<string> ProducePlanAsync(AgentTask task, CancellationToken cancellationToken)
+    {
+        var planPrompt = BuildPlanPrompt(task);
+        var result = await RunAIProcessAsync(planPrompt, cancellationToken);
+        return result.Output ?? "No plan produced";
+    }
+
+    /// <summary>
+    /// Build a prompt for plan-only analysis (no modifications).
+    /// </summary>
+    private string BuildPlanPrompt(AgentTask task)
+    {
+        var promptBuilder = new StringBuilder();
+
+        if (!string.IsNullOrEmpty(_spawnPrompt))
+        {
+            promptBuilder.AppendLine("--- SPAWN CONTEXT ---");
+            promptBuilder.AppendLine(_spawnPrompt);
+            promptBuilder.AppendLine();
+        }
+
+        promptBuilder.AppendLine("--- PLANNING MODE ---");
+        promptBuilder.AppendLine("You are in PLANNING MODE. Analyze the task and produce a detailed implementation plan.");
+        promptBuilder.AppendLine("DO NOT modify any files. Only analyze and plan.");
+        promptBuilder.AppendLine();
+
+        promptBuilder.AppendLine("--- YOUR ASSIGNED TASK ---");
+        if (!string.IsNullOrEmpty(task.Title))
+        {
+            promptBuilder.AppendLine($"TASK: {task.Title}");
+        }
+        promptBuilder.AppendLine($"DESCRIPTION: {task.Description}");
+
+        if (task.Files.Count > 0)
+        {
+            promptBuilder.AppendLine($"LIKELY FILES: {string.Join(", ", task.Files)}");
+        }
+
+        promptBuilder.AppendLine();
+        promptBuilder.AppendLine("OUTPUT FORMAT:");
+        promptBuilder.AppendLine("1. Summarize your understanding of the task");
+        promptBuilder.AppendLine("2. List the files you will need to modify");
+        promptBuilder.AppendLine("3. Describe the changes you will make to each file");
+        promptBuilder.AppendLine("4. Identify any potential issues or dependencies");
+        promptBuilder.AppendLine("5. Estimate the complexity and risk level");
+
+        if (_pendingContext.Count > 0)
+        {
+            promptBuilder.AppendLine();
+            promptBuilder.AppendLine("--- FEEDBACK FROM PREVIOUS PLAN ---");
+            foreach (var msg in _pendingContext.Where(m => m.Type == MessageType.PlanApproval))
+            {
+                var feedback = msg.Metadata?.GetValueOrDefault("feedback", "");
+                if (!string.IsNullOrEmpty(feedback))
+                {
+                    promptBuilder.AppendLine(feedback);
+                }
+            }
+        }
+
+        return promptBuilder.ToString();
     }
 
     /// <summary>

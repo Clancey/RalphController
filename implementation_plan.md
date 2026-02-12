@@ -53,46 +53,46 @@
 - [x] Implement `CoordinateAsync()` — poll messages, monitor agents, handle events, detect completion
 - [x] Implement plan approval flow — lead evaluates PlanSubmission via AI and responds
 - [x] Implement stuck agent detection — alert if Working > 2x avg task time with no messages
-- [?] Implement task reassignment — move tasks from stuck/crashed agents to idle agents
-- [?] Implement delegate mode — restrict lead to coordination-only (no file edits)
+- [x] Implement task reassignment — move tasks from stuck/crashed agents to idle agents
+- [x] Implement delegate mode — restrict lead to coordination-only (no file edits)
 - [x] Implement result synthesis — collect task results and produce summary report
 - [x] Add dynamic task management: `AddTask()`, `ReassignTask()`, `CancelTask()` during execution
-- [?] Wire orchestrator into `Program.cs` replacing TeamController usage
+- [ ] Wire orchestrator into `Program.cs` replacing TeamController usage (TUI path still uses old TeamController)
 
 ## Medium Priority — Merge & Conflicts (spec: merge-and-conflicts.md)
-- [?] Create `Merge/MergeManager.cs` with merge queue and file ownership tracking
-- [?] Create `Merge/MergeStatus.cs` enum (Pending, Queued, Merging, Merged, ConflictDetected, Resolved, Failed)
-- [?] Implement file ownership tracking (`Dictionary<string, string>` file→agentId) with overlap warnings
-- [?] Implement incremental merging — merge completed tasks immediately, don't wait for all agents
-- [?] Implement dependency-ordered merging (topological sort of DAG)
-- [?] Improve conflict negotiation prompt to include task descriptions and intent
-- [?] Add MergeStatus field to task model
-- [?] Extract merge logic from GitWorktreeManager into MergeManager
+- [x] Create `Merge/MergeManager.cs` with merge queue and file ownership tracking
+- [x] Create `Merge/MergeStatus.cs` enum (Pending, Queued, Merging, Merged, ConflictDetected, Resolved, Failed)
+- [x] Implement file ownership tracking (`Dictionary<string, string>` file→agentId) with overlap warnings
+- [x] Implement incremental merging — merge completed tasks immediately, don't wait for all agents
+- [x] Implement dependency-ordered merging (topological sort of DAG)
+- [x] Improve conflict negotiation prompt to include task descriptions and intent
+- [x] Add MergeStatus field to task model
+- [ ] Extract merge logic from GitWorktreeManager into MergeManager (currently delegates, not extracted)
 
 ## Medium Priority — TUI (spec: tui.md)
-- [?] Create `TUI/TUIView.cs` enum: AgentList, AgentDetail, TaskList
-- [?] Create `TUI/InputHandler.cs` for keyboard input (Shift+Up/Down, Enter, Escape, Ctrl+T)
-- [?] Implement agent selection state with Shift+Up/Down cycling
-- [?] Implement per-agent output buffers (separate from mixed log)
-- [?] Implement Agent List View — agent list left, selected agent detail right
-- [?] Implement Agent Detail View — full-screen output of selected agent (Enter to enter, Esc to exit)
-- [?] Implement Task List View — table with ID, Title, Status, Agent, Deps (Ctrl+T toggle)
-- [?] Add status bar — team name, agent count, task progress, elapsed time
-- [?] Add user message input — type text to send message to selected agent
-- [?] Wire TUI to events: `StateChanged`, `TaskCompleted`, `TaskUnblocked`, `OutputReceived`
-- [?] Ensure all dynamic text uses `Markup.Escape()`
+- [x] Create `TUI/TUIView.cs` enum: AgentList, AgentDetail, TaskList
+- [x] Create `TUI/InputHandler.cs` for keyboard input (Shift+Up/Down, Enter, Escape, Ctrl+T)
+- [x] Implement agent selection state with Shift+Up/Down cycling
+- [x] Implement per-agent output buffers (separate from mixed log)
+- [x] Implement Agent List View — agent list left, selected agent detail right
+- [x] Implement Agent Detail View — full-screen output of selected agent (Enter to enter, Esc to exit)
+- [x] Implement Task List View — table with ID, Title, Status, Agent, Deps (Ctrl+T toggle)
+- [x] Add status bar — team name, agent count, task progress, elapsed time
+- [x] Add user message input — type text to send message to selected agent
+- [x] Wire TUI to events: `StateChanged`, `TaskCompleted`, `TaskUnblocked`, `OutputReceived`
+- [x] Ensure all dynamic text uses `Markup.Escape()`
 
 ## Low Priority — Storage & Config
-- [?] Create `~/.ralph/teams/{team}/config.json` team config with members array
+- [x] Create `~/.ralph/teams/{team}/config.json` team config with members array
 - [x] Add `DelegateMode` flag to TeamConfig
-- [?] Add `RequirePlanApproval` per-agent setting to TeamConfig
-- [?] Team cleanup: remove worktrees, task files, mailbox, team config
+- [x] Add `RequirePlanApproval` per-agent setting to TeamConfig
+- [x] Team cleanup: remove worktrees, task files, mailbox, team config
 
 ## Low Priority — Polish
-- [?] Display modes: in-process (default) and split-pane (tmux/iTerm2)
-- [?] Hooks: `TeammateIdle` and `TaskCompleted` quality gate hooks
-- [?] Agent crash recovery: partial task re-queued on restart
-- [?] Max 3 plan revision cycles before lead override/reassign
+- [x] Display modes: in-process (default) and split-pane (tmux/iTerm2)
+- [x] Hooks: `TeammateIdle` and `TaskCompleted` quality gate hooks
+- [x] Agent crash recovery: partial task re-queued on restart
+- [x] Max 3 plan revision cycles before lead override/reassign
 
 ## Bugs/Issues
 - None yet

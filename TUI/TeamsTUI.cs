@@ -207,8 +207,9 @@ public sealed class TeamsTUI : IDisposable
     {
         switch (key.Key)
         {
-            // Shift+Up: select previous agent
-            case ConsoleKey.UpArrow when key.Modifiers.HasFlag(ConsoleModifiers.Shift):
+            // Up/k: select previous agent
+            case ConsoleKey.UpArrow:
+            case ConsoleKey.K:
                 lock (_viewLock)
                 {
                     if (_sortedAgentIds.Count > 0)
@@ -220,8 +221,9 @@ public sealed class TeamsTUI : IDisposable
                 RequestRender();
                 break;
 
-            // Shift+Down: select next agent
-            case ConsoleKey.DownArrow when key.Modifiers.HasFlag(ConsoleModifiers.Shift):
+            // Down/j: select next agent
+            case ConsoleKey.DownArrow:
+            case ConsoleKey.J:
                 lock (_viewLock)
                 {
                     if (_sortedAgentIds.Count > 0)
@@ -632,7 +634,7 @@ public sealed class TeamsTUI : IDisposable
         var stateStr = FormatOrchestratorState(_orchestrator.State);
         var viewHint = _currentView switch
         {
-            TUIView.AgentList => "Shift+Up/Down: select  Enter: detail  Ctrl+T: tasks  /: msg",
+            TUIView.AgentList => "Up/Down: select  Enter: detail  Ctrl+T: tasks  /: msg",
             TUIView.AgentDetail => "Esc: back  /: msg",
             TUIView.TaskList => "Esc: back  Ctrl+T: toggle",
             _ => ""

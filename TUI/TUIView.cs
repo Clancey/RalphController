@@ -8,7 +8,7 @@ public enum TUIView
 {
     /// <summary>
     /// Split view: agent list on the left, selected agent output on the right.
-    /// Shift+Up/Down cycles selectedAgentIndex.
+    /// Up/Down (or j/k) cycles selectedAgentIndex.
     /// </summary>
     AgentList,
 

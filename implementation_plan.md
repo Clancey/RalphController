@@ -14,7 +14,7 @@
 (Tasks here have been implemented but need another agent to verify)
 
 ## High Priority — Task System (spec: task-system.md)
-- [?] Create `Parallel/FileLock.cs` — file-lock helper using `FileStream(FileShare.None)` with timeout
+- [x] Create `Parallel/FileLock.cs` — file-lock helper using `FileStream(FileShare.None)` with timeout
 - [?] Rename/rewrite `Parallel/TaskQueue.cs` → `Parallel/TaskStore.cs` with dependency-aware claiming
 - [?] Update `Models/Task.cs` — simplify to 3+1 states (Pending, InProgress, Completed, Failed), add `IsClaimable()` method
 - [?] Change dependency references from title-based to stable task IDs (`task-1`, `task-2`, etc.)

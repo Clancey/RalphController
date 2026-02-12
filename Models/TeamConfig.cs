@@ -7,6 +7,9 @@ namespace RalphController.Models;
 /// </summary>
 public record TeamConfig
 {
+    /// <summary>Team name for scoped storage (defaults to "default")</summary>
+    public string TeamName { get; init; } = "default";
+
     /// <summary>Number of sub-agents (2-8)</summary>
     public int AgentCount
     {

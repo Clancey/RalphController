@@ -35,7 +35,7 @@ public class ConsoleUI : IDisposable
     // Teams mode fields
     private readonly TeamController? _teamController;
     private readonly ConcurrentDictionary<string, AgentStatistics> _agentStats = new();
-    private TaskQueueStatistics _queueStats = new() { Total = 0 };
+    private TaskStoreStatistics _queueStats = new() { Total = 0 };
 
     /// <summary>
     /// Whether to automatically start the loop when RunAsync is called
@@ -1219,10 +1219,10 @@ public class ConsoleUI : IDisposable
         var progressBar = $"[{barColor}]{new string('#', filledWidth)}[/][dim]{new string('-', emptyWidth)}[/]";
 
         var countsLine = $"[dim]Pending:[/] {stats.Pending}  " +
-                         $"[cyan]Claimed:[/] {stats.Claimed}  " +
                          $"[yellow]InProgress:[/] {stats.InProgress}  " +
                          $"[green]Completed:[/] {stats.Completed}  " +
                          $"[red]Failed:[/] {stats.Failed}  " +
+                         $"[cyan]Claimable:[/] {stats.Claimable}  " +
                          $"[bold]{percent:F0}%[/]";
 
         var content = $"{progressBar}\n{countsLine}";

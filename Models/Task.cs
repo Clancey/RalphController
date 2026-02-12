@@ -7,10 +7,13 @@ namespace RalphController.Models;
 /// </summary>
 public class AgentTask
 {
-    /// <summary>Unique task identifier</summary>
+    /// <summary>Stable task identifier (e.g., "task-1", "task-2")</summary>
     public string TaskId { get; set; } = Guid.NewGuid().ToString("N");
 
-    /// <summary>Task description (from implementation_plan.md)</summary>
+    /// <summary>Short title for display</summary>
+    public string? Title { get; set; }
+
+    /// <summary>Task description (full description for agent prompt)</summary>
     public string Description { get; set; } = string.Empty;
 
     /// <summary>Original line from implementation_plan.md</summary>
@@ -20,9 +23,15 @@ public class AgentTask
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public TaskPriority Priority { get; set; } = TaskPriority.Normal;
 
-    /// <summary>Current status</summary>
+    /// <summary>Current status (Pending, InProgress, Completed, Failed)</summary>
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public TaskStatus Status { get; set; } = TaskStatus.Pending;
+
+    /// <summary>Task dependencies — task IDs (not titles) that must complete first</summary>
+    public List<string> DependsOn { get; set; } = new();
+
+    /// <summary>Likely files to modify (for teams decomposition)</summary>
+    public List<string> Files { get; set; } = new();
 
     /// <summary>Agent ID that claimed this task</summary>
     public string? ClaimedByAgentId { get; set; }
@@ -36,11 +45,11 @@ public class AgentTask
     /// <summary>Error message if failed</summary>
     public string? Error { get; set; }
 
-    /// <summary>Retry count</summary>
+    /// <summary>Number of times this task has been retried</summary>
     public int RetryCount { get; set; }
 
-    /// <summary>Task dependencies (task IDs that must complete first)</summary>
-    public List<string> DependsOn { get; set; } = new();
+    /// <summary>Maximum retries before marking as permanently Failed (default: 2)</summary>
+    public int MaxRetries { get; set; } = 2;
 
     /// <summary>Category/section from implementation plan</summary>
     public string? Category { get; set; }
@@ -51,11 +60,17 @@ public class AgentTask
     /// <summary>When the task was completed</summary>
     public DateTime? CompletedAt { get; set; }
 
-    /// <summary>Likely files to modify (for teams decomposition)</summary>
-    public List<string> Files { get; set; } = new();
+    /// <summary>
+    /// Returns true if this task can be claimed: Pending status with all dependencies completed.
+    /// </summary>
+    public bool IsClaimable(IReadOnlyDictionary<string, AgentTask> allTasks)
+    {
+        if (Status != TaskStatus.Pending) return false;
+        if (DependsOn.Count == 0) return true;
 
-    /// <summary>Short title for display</summary>
-    public string? Title { get; set; }
+        return DependsOn.All(depId =>
+            allTasks.TryGetValue(depId, out var dep) && dep.Status == TaskStatus.Completed);
+    }
 }
 
 /// <summary>
@@ -70,12 +85,13 @@ public enum TaskPriority
 }
 
 /// <summary>
-/// Task status
+/// Task status — 3+1 state model matching Claude Code:
+/// Pending → InProgress → Completed
+///                     ↘ Failed (retry → Pending)
 /// </summary>
 public enum TaskStatus
 {
     Pending,
-    Claimed,
     InProgress,
     Completed,
     Failed

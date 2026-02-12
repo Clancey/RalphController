@@ -15,7 +15,7 @@ public class TeamController : IDisposable
 {
     private readonly RalphConfig _config;
     private readonly TeamConfig _teamConfig;
-    private readonly TaskQueue _taskQueue;
+    private readonly TaskStore _taskStore;
     private readonly GitWorktreeManager _gitManager;
     private readonly ConflictNegotiator _negotiator;
     private readonly ConcurrentDictionary<string, TeamAgent> _agents = new();
@@ -29,7 +29,7 @@ public class TeamController : IDisposable
     public event Action<string>? OnOutput;
     public event Action<string>? OnError;
     public event Action<AgentStatistics>? OnAgentUpdate;
-    public event Action<TaskQueueStatistics>? OnQueueUpdate;
+    public event Action<TaskStoreStatistics>? OnQueueUpdate;
     public event Action<TeamVerificationResult>? OnVerificationComplete;
     public event Action<TeamPhase>? OnPhaseChanged;
 
@@ -38,8 +38,13 @@ public class TeamController : IDisposable
         _config = config;
         _teamConfig = config.Teams ?? new TeamConfig();
 
-        var queuePersistPath = Path.Combine(config.ProjectFilesDirectory, ".ralph-queue.json");
-        _taskQueue = new TaskQueue(TimeSpan.FromSeconds(_teamConfig.TaskClaimTimeoutSeconds), queuePersistPath);
+        var teamName = _teamConfig.TeamName ?? "default";
+        var storePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".ralph", "teams", teamName, "tasks");
+        _taskStore = TaskStore.LoadFromDisk(
+            storePath,
+            TimeSpan.FromSeconds(_teamConfig.TaskClaimTimeoutSeconds));
         _gitManager = new GitWorktreeManager(config.TargetDirectory);
         _negotiator = new ConflictNegotiator(config, config.ProviderConfig);
         _mergeSemaphore = new SemaphoreSlim(_teamConfig.MaxConcurrentMerges);
@@ -55,8 +60,8 @@ public class TeamController : IDisposable
     /// <summary>When the current phase started (for elapsed time display)</summary>
     public DateTime PhaseStartedAt { get; private set; } = DateTime.UtcNow;
 
-    /// <summary>Task queue for monitoring</summary>
-    public TaskQueue TaskQueue => _taskQueue;
+    /// <summary>Task store for monitoring</summary>
+    public TaskStore TaskStore => _taskStore;
 
     /// <summary>
     /// Start the three-phase teams execution
@@ -85,7 +90,7 @@ public class TeamController : IDisposable
             SetPhase(TeamPhase.Decomposing);
             SetState(TeamControllerState.Running);
 
-            var existingStats = _taskQueue.GetStatistics();
+            var existingStats = _taskStore.GetStatistics();
             if (existingStats.Total > 0 && existingStats.Pending > 0)
             {
                 OnOutput?.Invoke($"Restored {existingStats.Total} tasks from previous session ({existingStats.Completed} completed, {existingStats.Pending} pending)");
@@ -95,7 +100,7 @@ public class TeamController : IDisposable
                 await DecomposeAsync(_stopCts.Token);
             }
 
-            var stats = _taskQueue.GetStatistics();
+            var stats = _taskStore.GetStatistics();
             if (existingStats.Total == 0)
                 OnOutput?.Invoke($"Decomposed into {stats.Total} tasks");
             OnQueueUpdate?.Invoke(stats);
@@ -117,7 +122,7 @@ public class TeamController : IDisposable
 
             SetPhase(TeamPhase.Complete);
             SetState(TeamControllerState.Stopped);
-            _taskQueue.DeletePersistenceFile();
+            _taskStore.DeletePersistenceFiles();
             OnOutput?.Invoke("Teams execution complete!");
         }
         catch (OperationCanceledException)
@@ -163,6 +168,8 @@ public class TeamController : IDisposable
 
         var lines = await File.ReadAllLinesAsync(planPath, cancellationToken);
         var category = "General";
+        var taskIndex = 0;
+        var tasks = new List<AgentTask>();
 
         foreach (var line in lines)
         {
@@ -174,13 +181,17 @@ public class TeamController : IDisposable
 
             if (line.TrimStart().StartsWith("- ["))
             {
-                var task = ParseTaskFromLine(line, category);
+                taskIndex++;
+                var task = ParseTaskFromLine(line, category, taskIndex);
                 if (task != null)
                 {
-                    _taskQueue.Enqueue(task);
+                    tasks.Add(task);
                 }
             }
         }
+
+        if (tasks.Count > 0)
+            _taskStore.AddTasks(tasks);
     }
 
     /// <summary>
@@ -363,7 +374,7 @@ public class TeamController : IDisposable
                 return;
             }
 
-            _taskQueue.EnqueueRange(tasks);
+            _taskStore.AddTasks(tasks);
             OnOutput?.Invoke($"AI decomposed into {tasks.Count} tasks");
         }
     }
@@ -390,14 +401,14 @@ public class TeamController : IDisposable
                 OnOutput?.Invoke($"[{agent.Statistics.Name}] Starting: {task.Title ?? task.Description}");
             agent.OnTaskComplete += (task, result) =>
             {
-                _taskQueue.Complete(task.TaskId, result);
-                OnQueueUpdate?.Invoke(_taskQueue.GetStatistics());
+                _taskStore.Complete(task.TaskId, result);
+                OnQueueUpdate?.Invoke(_taskStore.GetStatistics());
                 OnOutput?.Invoke($"[{agent.Statistics.Name}] Completed: {task.Title ?? task.Description}");
             };
             agent.OnTaskFailed += (task, error) =>
             {
-                _taskQueue.Fail(task.TaskId, error, _teamConfig.MaxRetries);
-                OnQueueUpdate?.Invoke(_taskQueue.GetStatistics());
+                _taskStore.Fail(task.TaskId, error);
+                OnQueueUpdate?.Invoke(_taskStore.GetStatistics());
                 OnError?.Invoke($"[{agent.Statistics.Name}] Failed: {error}");
             };
             agent.OnOutput += msg => OnOutput?.Invoke($"[{agent.Statistics.Name}] {msg}");
@@ -418,7 +429,7 @@ public class TeamController : IDisposable
 
             // Start agent loop
             var agentTask = agent.RunLoopAsync(
-                claimAgentId => _taskQueue.TryClaim(claimAgentId),
+                claimAgentId => _taskStore.TryClaim(claimAgentId),
                 cancellationToken);
             agentTasks.Add(agentTask);
         }
@@ -426,7 +437,7 @@ public class TeamController : IDisposable
         // Wait for all agents to complete
         await Task.WhenAll(agentTasks);
 
-        var finalStats = _taskQueue.GetStatistics();
+        var finalStats = _taskStore.GetStatistics();
         OnOutput?.Invoke($"Execution complete: {finalStats.Completed}/{finalStats.Total} tasks done, {finalStats.Failed} failed");
         OnQueueUpdate?.Invoke(finalStats);
     }
@@ -547,10 +558,10 @@ public class TeamController : IDisposable
         try
         {
             var planContent = File.ReadAllText(planPath);
-            var completedTasks = _taskQueue.GetAllTasks()
+            var completedTasks = _taskStore.GetAll()
                 .Where(t => t.Status == Models.TaskStatus.Completed)
                 .ToList();
-            var failedTasks = _taskQueue.GetAllTasks()
+            var failedTasks = _taskStore.GetAll()
                 .Where(t => t.Status == Models.TaskStatus.Failed)
                 .ToList();
 
@@ -674,7 +685,9 @@ Guidelines:
     }
 
     /// <summary>
-    /// Parse structured task output from AI decomposition
+    /// Parse structured task output from AI decomposition.
+    /// Assigns stable sequential IDs (task-1, task-2, ...) and resolves
+    /// title-based DEPENDS_ON references to task IDs.
     /// </summary>
     private List<AgentTask> ParseDecomposedTasks(string output)
     {
@@ -696,8 +709,15 @@ Guidelines:
             @"- TASK:\s*(.+?)(?:\n\s+DESCRIPTION:\s*(.+?))?(?:\n\s+PRIORITY:\s*(.+?))?(?:\n\s+DEPENDS_ON:\s*(.+?))?(?:\n\s+FILES:\s*(.+?))?(?=\n- TASK:|\z)",
             RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
+        // First pass: create tasks with stable IDs, collect title→id mapping
+        var titleToId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var rawDeps = new List<List<string>>(); // title-based deps per task
+        var taskIndex = 0;
+
         foreach (Match taskMatch in taskMatches)
         {
+            taskIndex++;
+            var taskId = $"task-{taskIndex}";
             var title = taskMatch.Groups[1].Value.Trim();
             var description = taskMatch.Groups[2].Success ? taskMatch.Groups[2].Value.Trim() : title;
             var priorityStr = taskMatch.Groups[3].Success ? taskMatch.Groups[3].Value.Trim().ToLower() : "normal";
@@ -716,24 +736,55 @@ Guidelines:
                 ? new List<string>()
                 : filesStr.Split(',').Select(f => f.Trim()).Where(f => !string.IsNullOrEmpty(f)).ToList();
 
-            var dependsOn = dependsOnStr.Equals("none", StringComparison.OrdinalIgnoreCase)
+            var depTitles = dependsOnStr.Equals("none", StringComparison.OrdinalIgnoreCase)
                 ? new List<string>()
                 : dependsOnStr.Split(',').Select(d => d.Trim()).Where(d => !string.IsNullOrEmpty(d)).ToList();
 
+            titleToId[title] = taskId;
+            rawDeps.Add(depTitles);
+
             tasks.Add(new AgentTask
             {
+                TaskId = taskId,
                 Title = title,
                 Description = description,
                 Priority = priority,
                 Files = files,
-                DependsOn = dependsOn
+                DependsOn = new List<string>() // Filled in second pass
             });
+        }
+
+        // Second pass: resolve title-based dependencies to task IDs
+        for (int i = 0; i < tasks.Count; i++)
+        {
+            foreach (var depTitle in rawDeps[i])
+            {
+                if (titleToId.TryGetValue(depTitle, out var depId))
+                {
+                    tasks[i].DependsOn.Add(depId);
+                }
+                else
+                {
+                    // Try fuzzy match — the AI might not use the exact title
+                    var fuzzyMatch = titleToId.Keys
+                        .FirstOrDefault(k => k.Contains(depTitle, StringComparison.OrdinalIgnoreCase)
+                            || depTitle.Contains(k, StringComparison.OrdinalIgnoreCase));
+                    if (fuzzyMatch != null)
+                    {
+                        tasks[i].DependsOn.Add(titleToId[fuzzyMatch]);
+                    }
+                    else
+                    {
+                        OnOutput?.Invoke($"Warning: Could not resolve dependency '{depTitle}' for task '{tasks[i].Title}'");
+                    }
+                }
+            }
         }
 
         return tasks;
     }
 
-    private AgentTask? ParseTaskFromLine(string line, string category)
+    private AgentTask? ParseTaskFromLine(string line, string category, int taskIndex)
     {
         if (line.Contains("[x]")) return null;
 
@@ -749,6 +800,7 @@ Guidelines:
 
         return new AgentTask
         {
+            TaskId = $"task-{taskIndex}",
             Title = description.Length > 60 ? description[..60] + "..." : description,
             Description = description,
             SourceLine = line,
@@ -766,7 +818,7 @@ Guidelines:
     /// <summary>
     /// Get task queue statistics
     /// </summary>
-    public TaskQueueStatistics GetQueueStatistics() => _taskQueue.GetStatistics();
+    public TaskStoreStatistics GetQueueStatistics() => _taskStore.GetStatistics();
 
     /// <summary>
     /// Stop all agents
@@ -810,6 +862,7 @@ Guidelines:
             agent.Dispose();
         }
 
+        _taskStore?.Dispose();
         _gitManager?.Dispose();
         _mergeSemaphore?.Dispose();
 

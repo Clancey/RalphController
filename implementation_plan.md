@@ -83,10 +83,10 @@
 - [ ] Ensure all dynamic text uses `Markup.Escape()`
 
 ## Low Priority — Storage & Config
-- [ ] Create `~/.ralph/teams/{team}/config.json` team config with members array
+- [?] Create `~/.ralph/teams/{team}/config.json` team config with members array
 - [x] Add `DelegateMode` flag to TeamConfig
-- [ ] Add `RequirePlanApproval` per-agent setting to TeamConfig
-- [ ] Team cleanup: remove worktrees, task files, mailbox, team config
+- [?] Add `RequirePlanApproval` per-agent setting to TeamConfig
+- [?] Team cleanup: remove worktrees, task files, mailbox, team config
 
 ## Low Priority — Polish
 - [ ] Display modes: in-process (default) and split-pane (tmux/iTerm2)

@@ -101,6 +101,136 @@ public record TeamConfig
             _ => LeadModel
         };
     }
+
+    /// <summary>Get whether a specific agent requires plan approval</summary>
+    public bool GetRequirePlanApproval(int agentIndex)
+    {
+        if (AgentPlanApproval.TryGetValue(agentIndex, out var override_))
+            return override_;
+
+        if (agentIndex < Members.Count)
+            return Members[agentIndex].RequirePlanApproval ?? RequirePlanApproval;
+
+        return RequirePlanApproval;
+    }
+
+    /// <summary>Get the team storage directory</summary>
+    public string GetTeamStoragePath()
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".ralph", "teams", TeamName);
+    }
+
+    /// <summary>Get the team config file path</summary>
+    public string GetTeamConfigPath() =>
+        Path.Combine(GetTeamStoragePath(), "config.json");
+
+    /// <summary>Save team config to disk</summary>
+    public void SaveToDisk()
+    {
+        var configPath = GetTeamConfigPath();
+        var dir = Path.GetDirectoryName(configPath);
+        if (dir != null && !Directory.Exists(dir))
+            Directory.CreateDirectory(dir);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(this, new System.Text.Json.JsonSerializerOptions
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            Converters = { new JsonStringEnumConverter() }
+        });
+        File.WriteAllText(configPath, json);
+    }
+
+    /// <summary>Load team config from disk, or return null if not found</summary>
+    public static TeamConfig? LoadFromDisk(string teamName)
+    {
+        var configPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".ralph", "teams", teamName, "config.json");
+
+        if (!File.Exists(configPath)) return null;
+
+        try
+        {
+            var json = File.ReadAllText(configPath);
+            return System.Text.Json.JsonSerializer.Deserialize<TeamConfig>(json, new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                Converters = { new JsonStringEnumConverter() }
+            });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Clean up all team artifacts: worktrees, task files, mailbox, config
+    /// </summary>
+    public async Task CleanupAsync(string projectDirectory)
+    {
+        var teamDir = GetTeamStoragePath();
+
+        // Remove task files
+        var tasksDir = Path.Combine(teamDir, "tasks");
+        if (Directory.Exists(tasksDir))
+            Directory.Delete(tasksDir, true);
+
+        // Remove mailbox files
+        var mailboxDir = Path.Combine(teamDir, "mailbox");
+        if (Directory.Exists(mailboxDir))
+            Directory.Delete(mailboxDir, true);
+
+        // Remove team config
+        var configPath = GetTeamConfigPath();
+        if (File.Exists(configPath))
+            File.Delete(configPath);
+
+        // Remove worktrees
+        if (UseWorktrees)
+        {
+            var worktreeBase = Path.Combine(projectDirectory, ".ralph-worktrees");
+            if (Directory.Exists(worktreeBase))
+            {
+                // Use git to properly remove worktrees
+                var gitManager = new Git.GitWorktreeManager(projectDirectory);
+                var worktreeDirs = Directory.GetDirectories(worktreeBase, $"team-*");
+                foreach (var wtDir in worktreeDirs)
+                {
+                    await gitManager.RemoveWorktreeAsync(wtDir);
+                }
+
+                // Remove the base directory if empty
+                if (Directory.Exists(worktreeBase) && !Directory.EnumerateFileSystemEntries(worktreeBase).Any())
+                    Directory.Delete(worktreeBase);
+            }
+        }
+
+        // Remove team directory if empty
+        if (Directory.Exists(teamDir) && !Directory.EnumerateFileSystemEntries(teamDir).Any())
+            Directory.Delete(teamDir);
+    }
+}
+
+/// <summary>
+/// Per-agent member configuration
+/// </summary>
+public record TeamMemberConfig
+{
+    /// <summary>Agent display name</summary>
+    public string? Name { get; init; }
+
+    /// <summary>Model specification for this agent</summary>
+    public ModelSpec? Model { get; init; }
+
+    /// <summary>Override plan approval for this agent (null = use team default)</summary>
+    public bool? RequirePlanApproval { get; init; }
+
+    /// <summary>Spawn prompt for this agent</summary>
+    public string? SpawnPrompt { get; init; }
 }
 
 /// <summary>

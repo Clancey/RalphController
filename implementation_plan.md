@@ -57,7 +57,7 @@
 - [?] Implement delegate mode — restrict lead to coordination-only (no file edits)
 - [x] Implement result synthesis — collect task results and produce summary report
 - [x] Add dynamic task management: `AddTask()`, `ReassignTask()`, `CancelTask()` during execution
-- [ ] Wire orchestrator into `Program.cs` replacing TeamController usage
+- [?] Wire orchestrator into `Program.cs` replacing TeamController usage
 
 ## Medium Priority — Merge & Conflicts (spec: merge-and-conflicts.md)
 - [ ] Create `Merge/MergeManager.cs` with merge queue and file ownership tracking

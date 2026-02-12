@@ -2090,15 +2090,15 @@ if (noTui)
     // Teams mode in no-TUI
     if (teamsMode && teamConfig != null)
     {
-        using var noTuiTeamController = new TeamController(config);
+        using var orchestrator = new TeamOrchestrator(config);
         var teamStopRequested = false;
 
-        noTuiTeamController.OnOutput += msg => Console.WriteLine($"[Teams] {msg}");
-        noTuiTeamController.OnError += msg => Console.Error.WriteLine($"[Teams ERROR] {msg}");
-        noTuiTeamController.OnPhaseChanged += phase => Console.WriteLine($"\n--- Phase: {phase} ---");
-        noTuiTeamController.OnAgentUpdate += stats =>
+        orchestrator.OnOutput += msg => Console.WriteLine($"[Teams] {msg}");
+        orchestrator.OnError += msg => Console.Error.WriteLine($"[Teams ERROR] {msg}");
+        orchestrator.OnStateChanged += state => Console.WriteLine($"\n--- State: {state} ---");
+        orchestrator.OnAgentUpdate += stats =>
             Console.WriteLine($"[{stats.Name}] State: {stats.State}, Tasks: {stats.TasksCompleted}/{stats.TasksCompleted + stats.TasksFailed} done");
-        noTuiTeamController.OnQueueUpdate += stats =>
+        orchestrator.OnQueueUpdate += stats =>
             Console.WriteLine($"[Queue] {stats.Completed}/{stats.Total} done, {stats.Pending} pending, {stats.Failed} failed");
 
         Console.CancelKeyPress += (_, e) =>
@@ -2106,14 +2106,14 @@ if (noTui)
             e.Cancel = true;
             teamStopRequested = true;
             Console.WriteLine("\n[Stopping teams...]");
-            noTuiTeamController.Stop();
+            orchestrator.Stop();
         };
 
         Console.WriteLine("[Press Ctrl+C to stop]\n");
 
         try
         {
-            await noTuiTeamController.StartAsync();
+            await orchestrator.RunAsync();
         }
         catch (OperationCanceledException) when (teamStopRequested)
         {

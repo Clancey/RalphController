@@ -467,6 +467,22 @@ public class TeamOrchestrator : IDisposable
         }
 
         OnOutput?.Invoke(results.ToString());
+
+        // Mark completed tasks in the implementation plan
+        OnOutput?.Invoke("Marking completed tasks in implementation plan...");
+        var verification = PlanUpdater.MarkCompletedTasks(
+            _config.PlanFilePath,
+            _taskStore.GetAll().ToList(),
+            msg => OnOutput?.Invoke(msg));
+
+        if (verification.AllTasksComplete)
+        {
+            OnOutput?.Invoke($"All {verification.TasksMarked} tasks marked complete in plan");
+        }
+        else
+        {
+            OnOutput?.Invoke($"Marked {verification.TasksMarked} tasks complete, {verification.IncompleteTasks.Count} incomplete");
+        }
     }
 
     public async Task MergeAndCleanupAsync(CancellationToken cancellationToken)
@@ -549,6 +565,7 @@ public class TeamOrchestrator : IDisposable
             TaskId = $"task-{taskIndex}",
             Title = description.Length > 60 ? description[..60] + "..." : description,
             Description = description,
+            SourceLine = line,
             Priority = isPriority ? TaskPriority.High : TaskPriority.Normal,
             Category = category
         };

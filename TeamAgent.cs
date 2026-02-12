@@ -6,6 +6,7 @@ using RalphController.Messaging;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace RalphController;
 
@@ -498,6 +499,17 @@ public class TeamAgent : IDisposable
             promptBuilder.AppendLine();
         }
 
+        // Include project context (stripped prompt.md) so planning has access to conventions
+        var promptContent = TryReadFile(ResolvePromptPath());
+        if (!string.IsNullOrEmpty(promptContent))
+        {
+            promptBuilder.AppendLine("--- PROJECT CONTEXT ---");
+            promptBuilder.AppendLine("The following is the project prompt for reference. Ignore any task-picking, verification workflow, or RALPH_STATUS instructions — those do not apply here.");
+            promptBuilder.AppendLine();
+            promptBuilder.AppendLine(StripRalphStatusBlock(promptContent));
+            promptBuilder.AppendLine();
+        }
+
         promptBuilder.AppendLine("--- PLANNING MODE ---");
         promptBuilder.AppendLine("You are in PLANNING MODE. Analyze the task and produce a detailed implementation plan.");
         promptBuilder.AppendLine("DO NOT modify any files. Only analyze and plan.");
@@ -714,9 +726,16 @@ public class TeamAgent : IDisposable
 
     private string BuildTaskPrompt(AgentTask task)
     {
-        var promptBuilder = new System.Text.StringBuilder();
+        var promptBuilder = new StringBuilder();
 
-        // Add spawn prompt first (task-specific context from orchestrator)
+        // Teams-mode preamble — tells the agent to ignore single-agent workflow instructions
+        promptBuilder.AppendLine("--- TEAMS MODE ---");
+        promptBuilder.AppendLine("You are one agent in a TEAM. You have been assigned a single task below.");
+        promptBuilder.AppendLine("IMPORTANT: Ignore any instructions about picking tasks from a plan, the [ ] → [?] → [x] verification workflow, or reporting completion via ---RALPH_STATUS--- blocks. Those are for single-agent mode and do not apply here.");
+        promptBuilder.AppendLine("When you are finished with your task, simply exit normally.");
+        promptBuilder.AppendLine();
+
+        // Add spawn prompt (task-specific context from orchestrator)
         if (!string.IsNullOrEmpty(_spawnPrompt))
         {
             promptBuilder.AppendLine("--- SPAWN CONTEXT ---");
@@ -724,24 +743,15 @@ public class TeamAgent : IDisposable
             promptBuilder.AppendLine();
         }
 
-        // Read the main prompt file
-        // When RalphFolder is set, project files are in a shared location (not per-worktree)
-        var promptPath = !string.IsNullOrEmpty(_config.RalphFolder)
-            ? _config.PromptFilePath
-            : _teamConfig.UseWorktrees
-                ? Path.Combine(_worktreePath, _config.PromptFile)
-                : _config.PromptFilePath;
-
-        if (File.Exists(promptPath))
+        // Read and include the main prompt file as reference context (stripped of RALPH_STATUS blocks)
+        var promptContent = TryReadFile(ResolvePromptPath());
+        if (!string.IsNullOrEmpty(promptContent))
         {
-            var mainPrompt = File.ReadAllText(promptPath);
-            promptBuilder.AppendLine(mainPrompt);
+            promptBuilder.AppendLine("--- PROJECT CONTEXT ---");
+            promptBuilder.AppendLine("The following is the project prompt for reference (coding conventions, project rules, etc.).");
+            promptBuilder.AppendLine("Use it as context but ignore any task-picking or verification workflow instructions.");
             promptBuilder.AppendLine();
-        }
-        else if (File.Exists(_config.PromptFilePath))
-        {
-            var mainPrompt = File.ReadAllText(_config.PromptFilePath);
-            promptBuilder.AppendLine(mainPrompt);
+            promptBuilder.AppendLine(StripRalphStatusBlock(promptContent));
             promptBuilder.AppendLine();
         }
 
@@ -763,20 +773,15 @@ public class TeamAgent : IDisposable
         promptBuilder.AppendLine("- Focus ONLY on this specific task");
         promptBuilder.AppendLine("- Do not modify files unrelated to this task");
         promptBuilder.AppendLine("- Commit your changes when done");
-        promptBuilder.AppendLine("- Report completion with ---RALPH_STATUS--- block");
+        promptBuilder.AppendLine("- When finished, exit normally");
         promptBuilder.AppendLine();
 
-        // Add implementation plan context
-        var planPath = !string.IsNullOrEmpty(_config.RalphFolder)
-            ? _config.PlanFilePath
-            : _teamConfig.UseWorktrees
-                ? Path.Combine(_worktreePath, _config.PlanFile)
-                : _config.PlanFilePath;
-
-        if (File.Exists(planPath))
+        // Add implementation plan context (first 30 lines for orientation)
+        var planContent = TryReadFile(ResolvePlanPath());
+        if (!string.IsNullOrEmpty(planContent))
         {
             promptBuilder.AppendLine("--- IMPLEMENTATION PLAN CONTEXT ---");
-            var planLines = File.ReadAllLines(planPath).Take(30);
+            var planLines = planContent.Split('\n').Take(30);
             foreach (var line in planLines)
             {
                 promptBuilder.AppendLine(line);
@@ -785,6 +790,75 @@ public class TeamAgent : IDisposable
         }
 
         return promptBuilder.ToString();
+    }
+
+    /// <summary>
+    /// Strip ---RALPH_STATUS---...---END_STATUS--- blocks and EXIT_SIGNAL lines from prompt content.
+    /// These are parsed by single-agent mode's ResponseAnalyzer and confuse team agents.
+    /// </summary>
+    private static string StripRalphStatusBlock(string content)
+    {
+        // Remove the entire RALPH_STATUS template block
+        content = Regex.Replace(
+            content,
+            @"---RALPH_STATUS---.*?---END_STATUS---",
+            "",
+            RegexOptions.Singleline);
+
+        // Remove EXIT_SIGNAL lines
+        content = Regex.Replace(
+            content,
+            @"^.*EXIT_SIGNAL.*$",
+            "",
+            RegexOptions.Multiline);
+
+        // Collapse excessive blank lines left behind
+        content = Regex.Replace(content, @"\n{3,}", "\n\n");
+
+        return content.Trim();
+    }
+
+    /// <summary>
+    /// Resolve the prompt file path, accounting for RalphFolder and worktrees.
+    /// </summary>
+    private string ResolvePromptPath()
+    {
+        if (!string.IsNullOrEmpty(_config.RalphFolder))
+            return _config.PromptFilePath;
+
+        return _teamConfig.UseWorktrees
+            ? Path.Combine(_worktreePath, _config.PromptFile)
+            : _config.PromptFilePath;
+    }
+
+    /// <summary>
+    /// Resolve the implementation plan file path, accounting for RalphFolder and worktrees.
+    /// </summary>
+    private string ResolvePlanPath()
+    {
+        if (!string.IsNullOrEmpty(_config.RalphFolder))
+            return _config.PlanFilePath;
+
+        return _teamConfig.UseWorktrees
+            ? Path.Combine(_worktreePath, _config.PlanFile)
+            : _config.PlanFilePath;
+    }
+
+    /// <summary>
+    /// Try to read a file, returning its content or null if not found.
+    /// Falls back to the canonical config path if the primary path doesn't exist.
+    /// </summary>
+    private string? TryReadFile(string path)
+    {
+        if (File.Exists(path))
+            return File.ReadAllText(path);
+
+        // Fallback: try the canonical config path (for worktree scenarios where
+        // the file lives in the main repo but not the worktree)
+        if (path != _config.PromptFilePath && File.Exists(_config.PromptFilePath))
+            return File.ReadAllText(_config.PromptFilePath);
+
+        return null;
     }
 
     private AIProviderConfig GetProviderConfig()

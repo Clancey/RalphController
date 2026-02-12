@@ -545,98 +545,14 @@ public class TeamController : IDisposable
 
     /// <summary>
     /// Mark completed tasks directly in the implementation plan file.
-    /// Avoids spawning a separate AI agent and creating extra commits.
+    /// Delegates to shared PlanUpdater for consistent matching across TeamController and TeamOrchestrator.
     /// </summary>
     private TeamVerificationResult MarkCompletedTasksInPlan()
     {
-        var result = new TeamVerificationResult();
-        var planPath = _config.PlanFilePath;
-
-        if (!File.Exists(planPath))
-        {
-            result.Summary = "No implementation plan file found";
-            result.AllTasksComplete = true; // Nothing to mark
-            return result;
-        }
-
-        try
-        {
-            var planContent = File.ReadAllText(planPath);
-            var completedTasks = _taskStore.GetAll()
-                .Where(t => t.Status == Models.TaskStatus.Completed)
-                .ToList();
-            var failedTasks = _taskStore.GetAll()
-                .Where(t => t.Status == Models.TaskStatus.Failed)
-                .ToList();
-
-            var tasksMarked = 0;
-
-            foreach (var task in completedTasks)
-            {
-                // Try to match task title/description against unchecked items in the plan
-                // Match patterns like "- [ ] task description" and replace with "- [x] task description"
-                var patterns = new List<string>();
-                if (!string.IsNullOrEmpty(task.Title))
-                    patterns.Add(Regex.Escape(task.Title.Trim()));
-                if (!string.IsNullOrEmpty(task.Description) && task.Description != task.Title)
-                {
-                    // Use first line of description for matching
-                    var firstLine = task.Description.Split('\n')[0].Trim();
-                    if (firstLine.Length > 10) // Only use meaningful descriptions
-                        patterns.Add(Regex.Escape(firstLine));
-                }
-
-                foreach (var pattern in patterns)
-                {
-                    // Match "- [ ] <pattern>" with flexible whitespace
-                    var checkboxPattern = $@"^(\s*-\s*)\[\s*\]\s*({pattern})";
-                    var match = Regex.Match(planContent, checkboxPattern, RegexOptions.Multiline | RegexOptions.IgnoreCase);
-                    if (match.Success)
-                    {
-                        planContent = planContent.Substring(0, match.Index)
-                            + $"{match.Groups[1].Value}[x] {match.Groups[2].Value}"
-                            + planContent.Substring(match.Index + match.Length);
-                        tasksMarked++;
-                        break; // Only mark once per task
-                    }
-                }
-            }
-
-            // Write back the updated plan
-            if (tasksMarked > 0)
-            {
-                File.WriteAllText(planPath, planContent);
-                OnOutput?.Invoke($"Updated {planPath}: marked {tasksMarked} tasks as complete");
-            }
-
-            // Build verification result
-            result.TasksMarked = tasksMarked;
-            result.AllTasksComplete = failedTasks.Count == 0 && completedTasks.Count > 0;
-
-            foreach (var failed in failedTasks)
-            {
-                result.IncompleteTasks.Add($"FAILED: {failed.Title ?? failed.Description}");
-            }
-
-            // Check for any tasks that were completed but couldn't be matched in the plan
-            var unmatched = completedTasks.Count - tasksMarked;
-            if (unmatched > 0)
-            {
-                result.Summary = $"{tasksMarked} marked complete, {unmatched} completed but not found in plan, {failedTasks.Count} failed";
-            }
-            else
-            {
-                result.Summary = $"{tasksMarked} tasks marked complete, {failedTasks.Count} failed";
-            }
-
-            return result;
-        }
-        catch (Exception ex)
-        {
-            result.AllTasksComplete = false;
-            result.IncompleteTasks.Add($"Error updating plan: {ex.Message}");
-            return result;
-        }
+        return PlanUpdater.MarkCompletedTasks(
+            _config.PlanFilePath,
+            _taskStore.GetAll().ToList(),
+            msg => OnOutput?.Invoke(msg));
     }
 
     private string BuildDecompositionPrompt()

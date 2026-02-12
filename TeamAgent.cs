@@ -30,7 +30,7 @@ public class TeamAgent : IDisposable
     private CancellationTokenSource? _stopCts;
     private CancellationTokenSource? _forceStopCts;
     private bool _shutdownRequested;
-    private bool _shutdownAccepted;
+
     private bool _disposed;
     private readonly SemaphoreSlim _idleSignal = new(0);
     private readonly List<Message> _pendingContext = new();
@@ -191,14 +191,12 @@ public class TeamAgent : IDisposable
     {
         if (State == AgentState.Idle)
         {
-            _shutdownAccepted = true;
             _shutdownRequested = true;
             _messageBus?.Send(Message.ShutdownResponseMessage(_agentId, true));
             _idleSignal.Release();
         }
         else
         {
-            _shutdownAccepted = false;
             _shutdownRequested = true;
             _messageBus?.Send(Message.ShutdownResponseMessage(
                 _agentId,

@@ -35,7 +35,7 @@ public class TeamOrchestrator : IDisposable
     public event Action<string>? OnError;
     public event Action<AgentStatistics>? OnAgentUpdate;
     public event Action<TaskStoreStatistics>? OnQueueUpdate;
-    public event Action<TeamPhase>? OnPhaseChanged;
+
 
     public TeamOrchestrator(RalphConfig config)
     {
@@ -291,7 +291,7 @@ public class TeamOrchestrator : IDisposable
         var taskId = msg.Metadata?.GetValueOrDefault("taskId", "");
         OnOutput?.Invoke($"Plan received from {msg.FromAgentId} for task {taskId}");
 
-        var approved = EvaluatePlan(msg.Content, taskId);
+        var approved = EvaluatePlan(msg.Content, taskId ?? "");
         var feedback = approved ? "" : "Plan needs revision: ensure it addresses the task and touches only expected files.";
 
         _leadBus?.Send(Message.PlanApprovalMessage("lead", msg.FromAgentId, approved, feedback));

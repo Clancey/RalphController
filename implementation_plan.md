@@ -37,15 +37,15 @@
 - [?] Emit lifecycle events: `AgentSpawned`, `AgentIdle`, `AgentWorking`, `AgentStopped`, `AgentError`
 
 ## High Priority — Messaging (spec: messaging.md)
-- [ ] Create `Messaging/Message.cs` model with MessageId, From, To, Type, Content, Metadata, Timestamp
-- [ ] Create `MessageType` enum: Text, StatusUpdate, ShutdownRequest, ShutdownResponse, PlanSubmission, PlanApproval, TaskAssignment, Broadcast
-- [ ] Create `Messaging/MessageBus.cs` — file-based JSONL per-agent inbox with read cursor tracking
-- [ ] Implement `Send()` with file-lock for concurrent write safety
-- [ ] Implement `Broadcast()` — append to all agent inboxes except sender
-- [ ] Implement `Poll()` — non-blocking read of new messages since cursor
-- [ ] Implement `WaitForMessages()` / `WaitForMessage(type)` — blocking with timeout
+- [?] Create `Messaging/Message.cs` model with MessageId, From, To, Type, Content, Metadata, Timestamp
+- [?] Create `MessageType` enum: Text, StatusUpdate, ShutdownRequest, ShutdownResponse, PlanSubmission, PlanApproval, TaskAssignment, Broadcast
+- [?] Create `Messaging/MessageBus.cs` — file-based JSONL per-agent inbox with read cursor tracking
+- [?] Implement `Send()` with file-lock for concurrent write safety
+- [?] Implement `Broadcast()` — append to all agent inboxes except sender
+- [?] Implement `Poll()` — non-blocking read of new messages since cursor
+- [?] Implement `WaitForMessages()` / `WaitForMessage(type)` — blocking with timeout
 - [ ] Integrate message processing into TeamAgent run loop (between tasks and during idle)
-- [ ] Store mailboxes at `~/.ralph/teams/{team}/mailbox/{agent-id}.jsonl`
+- [?] Store mailboxes at `~/.ralph/teams/{team}/mailbox/{agent-id}.jsonl`
 
 ## High Priority — Orchestration (spec: orchestration.md)
 - [ ] Rename/rewrite `TeamController.cs` → `TeamOrchestrator.cs`

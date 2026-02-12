@@ -61,11 +61,17 @@ public class TeamOrchestrator : IDisposable
     public TeamOrchestratorState State => _state;
     public TaskStore TaskStore => _taskStore;
     public IReadOnlyDictionary<string, TeamAgent> Agents => _agents;
+    public bool DelegateMode => _teamConfig.DelegateMode;
 
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         _stopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         SetState(TeamOrchestratorState.Initializing);
+
+        if (_teamConfig.DelegateMode)
+        {
+            OnOutput?.Invoke("Running in DELEGATE MODE — lead coordinates only, no file edits");
+        }
 
         try
         {
@@ -540,6 +546,33 @@ public class TeamOrchestrator : IDisposable
             Priority = isPriority ? TaskPriority.High : TaskPriority.Normal,
             Category = category
         };
+    }
+
+    /// <summary>
+    /// Get the delegate mode coordinator instructions for the lead's AI prompt.
+    /// When delegate mode is on, the lead should not edit files or run build commands.
+    /// </summary>
+    public string? GetDelegateModeInstructions()
+    {
+        if (!_teamConfig.DelegateMode) return null;
+
+        return """
+            --- DELEGATE MODE ---
+            You are a COORDINATOR. You must NOT:
+            - Edit, create, or delete any files
+            - Run build, test, or shell commands
+            - Make direct code changes
+
+            You CAN:
+            - Spawn and shut down agents
+            - Send and receive messages
+            - Create, assign, reassign, and cancel tasks
+            - Review and approve agent plans
+            - Synthesize findings into reports
+            - Provide guidance and feedback to agents
+
+            All implementation work must be delegated to your team agents.
+            """;
     }
 
     private void SetState(TeamOrchestratorState newState)

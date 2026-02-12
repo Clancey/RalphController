@@ -54,7 +54,7 @@
 - [x] Implement plan approval flow — lead evaluates PlanSubmission via AI and responds
 - [x] Implement stuck agent detection — alert if Working > 2x avg task time with no messages
 - [?] Implement task reassignment — move tasks from stuck/crashed agents to idle agents
-- [ ] Implement delegate mode — restrict lead to coordination-only (no file edits)
+- [?] Implement delegate mode — restrict lead to coordination-only (no file edits)
 - [x] Implement result synthesis — collect task results and produce summary report
 - [x] Add dynamic task management: `AddTask()`, `ReassignTask()`, `CancelTask()` during execution
 - [ ] Wire orchestrator into `Program.cs` replacing TeamController usage

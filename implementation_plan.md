@@ -67,7 +67,7 @@
 - [x] Implement dependency-ordered merging (topological sort of DAG)
 - [x] Improve conflict negotiation prompt to include task descriptions and intent
 - [x] Add MergeStatus field to task model
-- [ ] Extract merge logic from GitWorktreeManager into MergeManager (currently delegates, not extracted)
+- [?] Extract merge logic from GitWorktreeManager into MergeManager
 
 ## Medium Priority — TUI (spec: tui.md)
 - [x] Create `TUI/TUIView.cs` enum: AgentList, AgentDetail, TaskList

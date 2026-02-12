@@ -57,7 +57,7 @@
 - [x] Implement delegate mode — restrict lead to coordination-only (no file edits)
 - [x] Implement result synthesis — collect task results and produce summary report
 - [x] Add dynamic task management: `AddTask()`, `ReassignTask()`, `CancelTask()` during execution
-- [?] Wire orchestrator into `Program.cs` replacing TeamController usage
+- [x] Wire orchestrator into `Program.cs` replacing TeamController usage
 
 ## Medium Priority — Merge & Conflicts (spec: merge-and-conflicts.md)
 - [x] Create `Merge/MergeManager.cs` with merge queue and file ownership tracking
@@ -67,7 +67,7 @@
 - [x] Implement dependency-ordered merging (topological sort of DAG)
 - [x] Improve conflict negotiation prompt to include task descriptions and intent
 - [x] Add MergeStatus field to task model
-- [?] Extract merge logic from GitWorktreeManager into MergeManager
+- [x] Extract merge logic from GitWorktreeManager into MergeManager
 
 ## Medium Priority — TUI (spec: tui.md)
 - [x] Create `TUI/TUIView.cs` enum: AgentList, AgentDetail, TaskList

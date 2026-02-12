@@ -26,37 +26,37 @@
 - [x] Update decomposition parser to produce ID-based deps and resolve title references
 
 ## High Priority — Agent Lifecycle (spec: agent-lifecycle.md)
-- [?] Define `AgentState` enum: Spawning, Ready, Claiming, Working, PlanningWork, Idle, ShuttingDown, Stopped, Error
-- [?] Create `Models/AgentSpawnConfig.cs` with Name, Model, SpawnPrompt, RequirePlanApproval fields
-- [?] Rewrite `TeamAgent.cs` run loop — state machine with proper transitions and `StateChanged` event
-- [?] Implement idle polling with exponential backoff (1s→30s), wake on `TaskUnblocked` event
-- [?] Implement graceful shutdown protocol (request → finish current task → stop)
-- [?] Implement force-stop with 60s timeout fallback
-- [?] Add spawn prompt support — prepend task-specific context to agent AI prompt
-- [?] Implement plan-before-implement mode (read-only tools, submit plan to lead, wait for approval)
-- [?] Emit lifecycle events: `AgentSpawned`, `AgentIdle`, `AgentWorking`, `AgentStopped`, `AgentError`
+- [x] Define `AgentState` enum: Spawning, Ready, Claiming, Working, PlanningWork, Idle, ShuttingDown, Stopped, Error
+- [x] Create `Models/AgentSpawnConfig.cs` with Name, Model, SpawnPrompt, RequirePlanApproval fields
+- [x] Rewrite `TeamAgent.cs` run loop — state machine with proper transitions and `StateChanged` event
+- [x] Implement idle polling with exponential backoff (1s→30s), wake on `TaskUnblocked` event
+- [x] Implement graceful shutdown protocol (request → finish current task → stop)
+- [x] Implement force-stop with 60s timeout fallback
+- [x] Add spawn prompt support — prepend task-specific context to agent AI prompt
+- [x] Implement plan-before-implement mode (read-only tools, submit plan to lead, wait for approval)
+- [x] Emit lifecycle events: `AgentSpawned`, `AgentIdle`, `AgentWorking`, `AgentStopped`, `AgentError`
 
 ## High Priority — Messaging (spec: messaging.md)
-- [?] Create `Messaging/Message.cs` model with MessageId, From, To, Type, Content, Metadata, Timestamp
-- [?] Create `MessageType` enum: Text, StatusUpdate, ShutdownRequest, ShutdownResponse, PlanSubmission, PlanApproval, TaskAssignment, Broadcast
-- [?] Create `Messaging/MessageBus.cs` — file-based JSONL per-agent inbox with read cursor tracking
-- [?] Implement `Send()` with file-lock for concurrent write safety
-- [?] Implement `Broadcast()` — append to all agent inboxes except sender
-- [?] Implement `Poll()` — non-blocking read of new messages since cursor
-- [?] Implement `WaitForMessages()` / `WaitForMessage(type)` — blocking with timeout
-- [?] Integrate message processing into TeamAgent run loop (between tasks and during idle)
-- [?] Store mailboxes at `~/.ralph/teams/{team}/mailbox/{agent-id}.jsonl`
+- [x] Create `Messaging/Message.cs` model with MessageId, From, To, Type, Content, Metadata, Timestamp
+- [x] Create `MessageType` enum: Text, StatusUpdate, ShutdownRequest, ShutdownResponse, PlanSubmission, PlanApproval, TaskAssignment, Broadcast
+- [x] Create `Messaging/MessageBus.cs` — file-based JSONL per-agent inbox with read cursor tracking
+- [x] Implement `Send()` with file-lock for concurrent write safety
+- [x] Implement `Broadcast()` — append to all agent inboxes except sender
+- [x] Implement `Poll()` — non-blocking read of new messages since cursor
+- [x] Implement `WaitForMessages()` / `WaitForMessage(type)` — blocking with timeout
+- [x] Integrate message processing into TeamAgent run loop (between tasks and during idle)
+- [x] Store mailboxes at `~/.ralph/teams/{team}/mailbox/{agent-id}.jsonl`
 
 ## High Priority — Orchestration (spec: orchestration.md)
-- [?] Rename/rewrite `TeamController.cs` → `TeamOrchestrator.cs`
-- [?] Replace 3-phase sequential model with continuous coordination loop
-- [?] Implement `CoordinateAsync()` — poll messages, monitor agents, handle events, detect completion
-- [?] Implement plan approval flow — lead evaluates PlanSubmission via AI and responds
-- [?] Implement stuck agent detection — alert if Working > 2x avg task time with no messages
+- [x] Rename/rewrite `TeamController.cs` → `TeamOrchestrator.cs`
+- [x] Replace 3-phase sequential model with continuous coordination loop
+- [x] Implement `CoordinateAsync()` — poll messages, monitor agents, handle events, detect completion
+- [x] Implement plan approval flow — lead evaluates PlanSubmission via AI and responds
+- [x] Implement stuck agent detection — alert if Working > 2x avg task time with no messages
 - [ ] Implement task reassignment — move tasks from stuck/crashed agents to idle agents
 - [ ] Implement delegate mode — restrict lead to coordination-only (no file edits)
-- [?] Implement result synthesis — collect task results and produce summary report
-- [?] Add dynamic task management: `AddTask()`, `ReassignTask()`, `CancelTask()` during execution
+- [x] Implement result synthesis — collect task results and produce summary report
+- [x] Add dynamic task management: `AddTask()`, `ReassignTask()`, `CancelTask()` during execution
 - [ ] Wire orchestrator into `Program.cs` replacing TeamController usage
 
 ## Medium Priority — Merge & Conflicts (spec: merge-and-conflicts.md)

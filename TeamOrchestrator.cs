@@ -310,46 +310,73 @@ public class TeamOrchestrator : IDisposable
         if (avgTaskTime == TimeSpan.Zero) return false;
 
         var stuckThreshold = TimeSpan.FromTicks(avgTaskTime.Ticks * 2);
+        var now = DateTime.UtcNow;
 
         foreach (var (agentId, agent) in _agents)
         {
             if (agent.State != AgentState.Working) continue;
 
-            if (_agentStateTimestamps.TryGetValue(agentId, out var stateTime))
+            if (!_agentStateTimestamps.TryGetValue(agentId, out var stateTime)) continue;
+            var timeInState = now - stateTime;
+            if (timeInState <= stuckThreshold) continue;
+
+            // Also check if agent has sent messages recently (activity proxy)
+            if (_agentMonitor.TryGetValue(agentId, out var monitor) &&
+                (now - monitor.LastMessageAt) > stuckThreshold)
             {
-                var timeInState = DateTime.UtcNow - stateTime;
-                if (timeInState > stuckThreshold)
-                {
-                    return true;
-                }
+                return true;
             }
         }
 
         return false;
     }
 
-    private Task HandleStuckAgentsAsync()
+    private async Task HandleStuckAgentsAsync()
     {
-        OnOutput?.Invoke("Checking for stuck agents...");
+        var avgTaskTime = await GetAverageTaskTimeAsync();
+        if (avgTaskTime == TimeSpan.Zero) return;
+
+        var stuckThreshold = TimeSpan.FromTicks(avgTaskTime.Ticks * 2);
+        var now = DateTime.UtcNow;
 
         foreach (var (agentId, agent) in _agents)
         {
-            if (agent.State != AgentState.Working) continue;
+            if (agent.State != AgentState.Working || agent.CurrentTask == null) continue;
+            if (!_agentStateTimestamps.TryGetValue(agentId, out var stateTime)) continue;
 
-            if (_agentStateTimestamps.TryGetValue(agentId, out var stateTime))
+            var timeInState = now - stateTime;
+            if (timeInState <= stuckThreshold) continue;
+
+            // Check no recent messages from this agent
+            if (_agentMonitor.TryGetValue(agentId, out var monitor) &&
+                (now - monitor.LastMessageAt) <= stuckThreshold)
             {
-                var avgTaskTime = GetAverageTaskTimeAsync().Result;
-                var stuckThreshold = TimeSpan.FromTicks(avgTaskTime.Ticks * 2);
-                var timeInState = DateTime.UtcNow - stateTime;
+                continue;  // Agent is communicating, not actually stuck
+            }
 
-                if (timeInState > stuckThreshold && agent.CurrentTask != null)
-                {
-                    OnOutput?.Invoke($"Agent {agentId} may be stuck on task {agent.CurrentTask.TaskId}");
-                }
+            var taskId = agent.CurrentTask.TaskId;
+            OnOutput?.Invoke($"Agent {agentId} appears stuck on task {taskId} ({timeInState.TotalSeconds:F0}s)");
+
+            // Send a status check message to the stuck agent
+            _leadBus?.Send(Message.TextMessage("lead", agentId, "Status check: are you still working on your current task?"));
+
+            // Find an idle agent to reassign to
+            var idleAgent = _agents.Values.FirstOrDefault(a =>
+                a.AgentId != agentId &&
+                a.State == AgentState.Idle);
+
+            if (idleAgent != null)
+            {
+                OnOutput?.Invoke($"Reassigning task {taskId} from stuck agent {agentId} to idle agent {idleAgent.AgentId}");
+                _taskStore.ReassignTask(taskId, null);  // Reset to Pending so idle agent can claim it
+                _leadBus?.Send(Message.TaskAssignmentMessage("lead", idleAgent.AgentId, taskId,
+                    agent.CurrentTask.Description));
+            }
+            else
+            {
+                OnOutput?.Invoke($"No idle agents available to reassign task {taskId}");
             }
         }
-
-        return Task.CompletedTask;
     }
 
     private Task<TimeSpan> GetAverageTaskTimeAsync()

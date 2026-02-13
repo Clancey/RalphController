@@ -326,44 +326,10 @@ public class LeadAgent : IDisposable
                 }
                 else
                 {
-                    // Try AI merge-fix agent before giving up
-                    OnOutput?.Invoke($"Merge failed for {taskId}, attempting AI merge-fix agent...");
-                    var task = taskAgent.Task;
-                    var fixAgent = new MergeFixAgent(_config, _teamConfig);
-                    fixAgent.OnOutput += output => OnOutput?.Invoke(output);
-                    fixAgent.OnError += error => OnError?.Invoke(error);
-
-                    var resolved = await fixAgent.ResolveAsync(
-                        _gitManager.RepositoryRoot,
-                        mergeResult.Conflicts ?? new(),
-                        mergeResult.Error,
-                        task.Description,
-                        ct);
-
-                    Statistics.AITime += fixAgent.LastDuration;
-
-                    if (resolved)
-                    {
-                        // Commit the resolution and mark success
-                        await _gitManager.CommitWorktreeAsync(
-                            _gitManager.RepositoryRoot,
-                            $"[merge-fix] {task.Title ?? task.Description}",
-                            ct);
-                        _taskStore.Complete(taskId, new TaskResult(
-                            true,
-                            $"{result.Summary} (merge conflicts resolved by AI)",
-                            result.AllFilesModified,
-                            result.Code?.Output ?? "",
-                            Statistics.TotalDuration));
-                        Statistics.TasksCompleted++;
-                        OnOutput?.Invoke($"Task {taskId} merge conflicts resolved and committed");
-                    }
-                    else
-                    {
-                        _taskStore.Fail(taskId, $"Merge failed: {mergeResult.Error}");
-                        Statistics.TasksFailed++;
-                        OnError?.Invoke($"Merge failed for {taskId}: {mergeResult.Error}");
-                    }
+                    // MergeBranchAsync already tried AI merge-fix in the worktree
+                    _taskStore.Fail(taskId, $"Merge failed: {mergeResult.Error}");
+                    Statistics.TasksFailed++;
+                    OnError?.Invoke($"Merge failed for {taskId}: {mergeResult.Error}");
                 }
             }
             finally
@@ -602,8 +568,9 @@ public class LeadAgent : IDisposable
             targetBranch = await _gitManager.GetCurrentBranchAsync(ct);
         }
 
-        // Rebase the worktree branch onto the latest target before merging.
-        // This brings in any work already merged by other agents, reducing conflicts.
+        // Step 1: Bring the worktree branch up to date with the target branch.
+        // This incorporates any work already merged by other agents.
+        // Try rebase first (clean linear history), fall back to merge + AI conflict resolution.
         if (_teamConfig.UseWorktrees)
         {
             OnOutput?.Invoke($"[{taskAgent.AgentId}] Rebasing {taskAgent.BranchName} onto {targetBranch}...");
@@ -614,21 +581,60 @@ public class LeadAgent : IDisposable
 
             if (rebaseResult.ExitCode != 0)
             {
-                OnOutput?.Invoke($"[{taskAgent.AgentId}] Rebase failed, aborting rebase and proceeding to merge...");
+                // Rebase failed — abort and try a regular merge instead
                 await _gitManager.RunGitCommandAsync(taskAgent.WorktreePath, "rebase --abort", ct);
+                OnOutput?.Invoke($"[{taskAgent.AgentId}] Rebase had conflicts, merging {targetBranch} into worktree...");
+
+                var mergeInResult = await _gitManager.RunGitCommandAsync(
+                    taskAgent.WorktreePath,
+                    $"merge {targetBranch}",
+                    ct);
+
+                if (mergeInResult.ExitCode != 0)
+                {
+                    // Merge has conflicts — resolve with AI agent IN THE WORKTREE
+                    var conflicts = _mergeManager.DetectConflicts(taskAgent.WorktreePath);
+                    OnOutput?.Invoke($"[{taskAgent.AgentId}] {conflicts.Count} conflicted files, launching merge-fix agent in worktree...");
+
+                    var fixAgent = new MergeFixAgent(_config, _teamConfig);
+                    fixAgent.OnOutput += output => OnOutput?.Invoke(output);
+                    fixAgent.OnError += error => OnError?.Invoke(error);
+
+                    var resolved = await fixAgent.ResolveAsync(
+                        taskAgent.WorktreePath,
+                        conflicts,
+                        mergeInResult.Error,
+                        taskAgent.Task.Description,
+                        ct);
+
+                    Statistics.AITime += fixAgent.LastDuration;
+
+                    if (!resolved)
+                    {
+                        await _gitManager.RunGitCommandAsync(taskAgent.WorktreePath, "merge --abort", ct);
+                        return new MergeResult
+                        {
+                            Success = false,
+                            Conflicts = conflicts,
+                            Error = "Merge conflict resolution failed in worktree"
+                        };
+                    }
+
+                    // MergeFixAgent resolved — commit the merge in the worktree
+                    await _gitManager.CommitWorktreeAsync(
+                        taskAgent.WorktreePath,
+                        $"Merge {targetBranch} (conflicts resolved)",
+                        ct);
+                }
             }
         }
 
-        var task = taskAgent.Task;
-        var commitMessage = task.Title ?? task.Description;
-
-        return _teamConfig.MergeStrategy switch
-        {
-            MergeStrategy.MergeDirect => await _mergeManager.MergeDirectAsync(
-                taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage),
-            _ => await _mergeManager.RebaseAndMergeAsync(
-                taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage)
-        };
+        // Step 2: Squash merge the worktree branch into the target.
+        // The worktree branch is now up to date with the target (via rebase or merge above),
+        // so this squash merge should apply cleanly.
+        var commitMessage = taskAgent.Task.Title ?? taskAgent.Task.Description;
+        return await _mergeManager.MergeDirectAsync(
+            taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage);
     }
 
     // --- Prompt building ---

@@ -509,6 +509,9 @@ public class MergeManager : IDisposable
 
         if (rebaseResult.ExitCode != 0)
         {
+            // Abort the failed rebase to leave worktree in a clean state
+            await _worktrees.RunGitCommandAsync(worktreePath, "rebase --abort", cancellationToken);
+
             var conflicts = DetectConflicts(worktreePath);
             if (conflicts.Count > 0)
             {

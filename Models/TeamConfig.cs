@@ -119,6 +119,13 @@ public record TeamConfig
     public int LeadDecisionTimeoutSeconds { get; init; } = 300;
 
     /// <summary>
+    /// Maximum time in minutes a task agent can run without producing output.
+    /// After this, the agent is forcibly reaped as failed.
+    /// Set to 0 to disable (not recommended). Default: 30 minutes.
+    /// </summary>
+    public int AgentInactivityTimeoutMinutes { get; init; } = 30;
+
+    /// <summary>
     /// Which sub-agent phases to run for each task.
     /// Defaults to all three: Plan, Code, Verify.
     /// </summary>

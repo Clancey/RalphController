@@ -35,6 +35,9 @@ public class LeadAgent : IDisposable
     private DateTime _lastAgentFailure = DateTime.MinValue;
     private static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(3);
 
+    // Stale agent detection: wake up periodically to check for stuck agents
+    private static readonly TimeSpan StaleCheckInterval = TimeSpan.FromSeconds(60);
+
     // User messaging support
     private readonly MessageBus? _messageBus;
     private readonly List<Message> _pendingUserMessages = new();
@@ -289,6 +292,8 @@ public class LeadAgent : IDisposable
             // Clean up any remaining agents
             foreach (var running in _runningAgents.Values)
             {
+                running.AgentCts?.Cancel();
+                running.AgentCts?.Dispose();
                 running.TaskAgent.Dispose();
             }
             _runningAgents.Clear();
@@ -333,13 +338,73 @@ public class LeadAgent : IDisposable
             {
                 OnTaskAgentDestroyed?.Invoke(running.TaskAgent);
                 running.TaskAgent.Dispose();
+                running.AgentCts?.Dispose();
                 OnQueueUpdate?.Invoke(_taskStore.GetStatistics());
             }
         }
     }
 
     /// <summary>
-    /// Wait until at least one running agent completes or a user message arrives.
+    /// Detect and force-reap agents that have been inactive (no AI output) longer
+    /// than AgentInactivityTimeoutMinutes.  This handles the case where an AI process
+    /// exits but grandchild processes keep the stdout pipe open, preventing the
+    /// background Task from completing.
+    /// </summary>
+    private async Task ForceReapStaleAgentsAsync(CancellationToken ct)
+    {
+        var timeoutMinutes = _teamConfig.AgentInactivityTimeoutMinutes;
+        if (timeoutMinutes <= 0) return; // Disabled
+
+        var threshold = TimeSpan.FromMinutes(timeoutMinutes);
+        var now = DateTime.UtcNow;
+
+        var staleIds = _runningAgents
+            .Where(kvp =>
+            {
+                // Only consider agents whose background task is NOT completed —
+                // completed ones will be reaped normally by ReapCompletedAgentsAsync.
+                if (kvp.Value.BackgroundTask.IsCompleted) return false;
+
+                var lastActivity = kvp.Value.TaskAgent.Statistics.LastActivityAt;
+                var inactiveDuration = now - lastActivity;
+                return inactiveDuration > threshold;
+            })
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        foreach (var id in staleIds)
+        {
+            if (!_runningAgents.TryRemove(id, out var running))
+                continue;
+
+            var inactiveFor = now - running.TaskAgent.Statistics.LastActivityAt;
+            OnError?.Invoke($"Agent {running.TaskAgent.AgentId} has been inactive for {inactiveFor.TotalMinutes:F0} minutes — force-reaping as failed");
+
+            // Cancel the agent's per-task CTS if it exists, to unblock any stuck I/O
+            running.AgentCts?.Cancel();
+
+            // Give the task a moment to respond to cancellation
+            try
+            {
+                await Task.WhenAny(running.BackgroundTask, Task.Delay(5000, ct));
+            }
+            catch { /* ignore — we're force-reaping */ }
+
+            _taskStore.Fail(running.TaskId, $"Agent inactive for {inactiveFor.TotalMinutes:F0} minutes (timeout: {timeoutMinutes}m)");
+            _lastAgentFailure = DateTime.UtcNow;
+
+            OnTaskAgentDestroyed?.Invoke(running.TaskAgent);
+            running.TaskAgent.Dispose();
+            running.AgentCts?.Dispose();
+            OnQueueUpdate?.Invoke(_taskStore.GetStatistics());
+            Statistics.TasksFailed++;
+        }
+    }
+
+    /// <summary>
+    /// Wait until at least one running agent completes, a user message arrives,
+    /// or the stale-check interval elapses. Periodic wake-ups ensure the lead
+    /// can detect and force-reap stuck agents even when no tasks complete.
     /// </summary>
     private async Task WaitForAnyAgentCompletionAsync(CancellationToken ct)
     {
@@ -348,8 +413,13 @@ public class LeadAgent : IDisposable
         var agentTasks = _runningAgents.Values.Select(r => (Task)r.BackgroundTask).ToList();
         // Also wait for a user message signal so we wake up to handle it
         agentTasks.Add(_messageSignal.WaitAsync(ct));
+        // Periodic wake-up to check for stale agents
+        agentTasks.Add(Task.Delay(StaleCheckInterval, ct));
 
         await Task.WhenAny(agentTasks).WaitAsync(ct);
+
+        // Force-reap any agents that have been inactive too long
+        await ForceReapStaleAgentsAsync(ct);
 
         // Now reap the completed ones
         await ReapCompletedAgentsAsync(ct);
@@ -567,25 +637,48 @@ public class LeadAgent : IDisposable
         WireTaskAgentEvents(taskAgent);
         OnTaskAgentCreated?.Invoke(taskAgent);
 
+        // Per-agent CTS: linked to the main CT, plus an overall hard timeout.
+        // This ensures agents can't run forever even if their process is stuck.
+        var agentCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var hardTimeoutMinutes = _teamConfig.AgentInactivityTimeoutMinutes * 2; // 2x the inactivity timeout
+        if (hardTimeoutMinutes > 0)
+        {
+            agentCts.CancelAfter(TimeSpan.FromMinutes(hardTimeoutMinutes));
+        }
+        var agentCt = agentCts.Token;
+
         // Launch in background
         var backgroundTask = Task.Run(async () =>
         {
-            var initialized = await taskAgent.InitializeAsync(ct);
-            if (!initialized)
+            try
             {
-                OnError?.Invoke($"Failed to initialize TaskAgent for {taskId}");
+                var initialized = await taskAgent.InitializeAsync(agentCt);
+                if (!initialized)
+                {
+                    OnError?.Invoke($"Failed to initialize TaskAgent for {taskId}");
+                    return new TaskAgentResult
+                    {
+                        Success = false,
+                        BranchName = taskAgent.BranchName,
+                        Summary = "Worktree initialization failed"
+                    };
+                }
+
+                return await taskAgent.RunAsync(agentCt);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Per-agent timeout, not the main cancellation
                 return new TaskAgentResult
                 {
                     Success = false,
                     BranchName = taskAgent.BranchName,
-                    Summary = "Worktree initialization failed"
+                    Summary = $"Agent timed out after {hardTimeoutMinutes} minutes"
                 };
             }
-
-            return await taskAgent.RunAsync(ct);
         }, ct);
 
-        _runningAgents[taskId] = new RunningTaskAgent(taskAgent, taskId, backgroundTask);
+        _runningAgents[taskId] = new RunningTaskAgent(taskAgent, taskId, backgroundTask, agentCts);
         OnOutput?.Invoke($"Agent {taskAgent.AgentId} running ({_runningAgents.Count}/{MaxConcurrent} slots used)");
     }
 
@@ -925,6 +1018,8 @@ public class LeadAgent : IDisposable
 
         foreach (var running in _runningAgents.Values)
         {
+            running.AgentCts?.Cancel();
+            running.AgentCts?.Dispose();
             running.TaskAgent.Dispose();
         }
         _runningAgents.Clear();
@@ -937,5 +1032,9 @@ public class LeadAgent : IDisposable
     /// <summary>
     /// Tracks a TaskAgent running in the background.
     /// </summary>
-    private record RunningTaskAgent(TaskAgent TaskAgent, string TaskId, Task<TaskAgentResult> BackgroundTask);
+    private record RunningTaskAgent(
+        TaskAgent TaskAgent,
+        string TaskId,
+        Task<TaskAgentResult> BackgroundTask,
+        CancellationTokenSource? AgentCts = null);
 }

@@ -202,6 +202,16 @@ public class TeamOrchestrator : IDisposable
         {
             await leadAgent.RunAsync(cancellationToken);
         }
+        catch (OperationCanceledException)
+        {
+            OnOutput?.Invoke("Lead agent cancelled");
+        }
+        catch (Exception ex)
+        {
+            OnError?.Invoke($"Lead agent crashed: {ex.Message}");
+            OnOutput?.Invoke($"Lead agent encountered a fatal error: {ex.Message}");
+            OnOutput?.Invoke("Attempting to wait for running agents to complete...");
+        }
         finally
         {
             _leadAgent = null;

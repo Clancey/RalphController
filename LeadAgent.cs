@@ -127,135 +127,150 @@ public class LeadAgent : IDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                // Reap any completed agents first
-                await ReapCompletedAgentsAsync(cancellationToken);
-
-                // Check for new user messages
-                ProcessPendingMessages();
-
-                // Backoff after rapid failures to prevent agent churn
-                var timeSinceFailure = DateTime.UtcNow - _lastAgentFailure;
-                if (timeSinceFailure < FailureBackoff)
+                try
                 {
-                    var waitTime = FailureBackoff - timeSinceFailure;
-                    OnOutput?.Invoke($"Backoff: waiting {waitTime.TotalSeconds:F0}s after agent failure...");
-                    await Task.Delay(waitTime, cancellationToken);
-                }
+                    // Reap any completed agents first
+                    await ReapCompletedAgentsAsync(cancellationToken);
 
-                var stats = _taskStore.GetStatistics();
-                OnQueueUpdate?.Invoke(stats);
+                    // Check for new user messages
+                    ProcessPendingMessages();
 
-                // Check if we're done: no pending tasks, nothing running, no user messages
-                if (stats.Pending == 0 && stats.InProgress == 0 && _runningAgents.IsEmpty
-                    && _pendingUserMessages.Count == 0)
-                {
-                    OnOutput?.Invoke("All tasks resolved. Declaring complete.");
-                    break;
-                }
-
-                // Priority: if user messages are pending, force an AI decision cycle
-                // so the lead can act on them (add tasks, re-read plan, etc.)
-                if (_pendingUserMessages.Count > 0)
-                {
-                    SetState(AgentState.Deciding);
-                    OnOutput?.Invoke($"Processing {_pendingUserMessages.Count} user message(s)...");
-                    var userDecision = await GetNextDecisionAsync(cancellationToken);
-                    _pendingUserMessages.Clear();
-
-                    if (userDecision != null)
+                    // Backoff after rapid failures to prevent agent churn
+                    var timeSinceFailure = DateTime.UtcNow - _lastAgentFailure;
+                    if (timeSinceFailure < FailureBackoff)
                     {
-                        OnDecision?.Invoke(userDecision);
-                        OnOutput?.Invoke($"Decision: {userDecision.Action} {userDecision.TaskId ?? ""} — {userDecision.Reason ?? ""}");
-                        await ExecuteDecisionAsync(userDecision, cancellationToken);
+                        var waitTime = FailureBackoff - timeSinceFailure;
+                        OnOutput?.Invoke($"Backoff: waiting {waitTime.TotalSeconds:F0}s after agent failure...");
+                        await Task.Delay(waitTime, cancellationToken);
                     }
-                    continue;
-                }
 
-                // If all slots full or no claimable tasks, wait for an agent to finish
-                if (_runningAgents.Count >= MaxConcurrent || (stats.Pending == 0 && _runningAgents.Count > 0))
-                {
-                    SetState(AgentState.Idle);
-                    var runningIds = string.Join(", ", _runningAgents.Keys);
-                    OnOutput?.Invoke($"All {_runningAgents.Count} agent slots active ({runningIds}), waiting for completion...");
-                    await WaitForAnyAgentCompletionAsync(cancellationToken);
-                    continue;
-                }
+                    var stats = _taskStore.GetStatistics();
+                    OnQueueUpdate?.Invoke(stats);
 
-                // Fast-path: if there are claimable tasks and free slots, skip the AI
-                // entirely and just pick the highest-priority pending task.
-                // Only consult the AI for complex decisions (retries, skips, all tasks done).
-                var claimable = _taskStore.GetClaimable();
-                LeadDecision? decision;
-
-                if (claimable.Count > 0)
-                {
-                    var next = claimable.OrderBy(t => t.Priority).First();
-                    decision = new LeadDecision
+                    // Check if we're done: no pending tasks, nothing running, no user messages
+                    if (stats.Pending == 0 && stats.InProgress == 0 && _runningAgents.IsEmpty
+                        && _pendingUserMessages.Count == 0)
                     {
-                        Action = LeadAction.NextTask,
-                        TaskId = next.TaskId,
-                        Reason = $"Next highest-priority pending task"
-                    };
-                    OnOutput?.Invoke($"Fast-assigning task {next.TaskId}: {next.Title ?? next.Description}");
-                    _consecutiveParseFailures = 0;
-                }
-                else if (stats.Failed > 0)
-                {
-                    // Complex decision needed (retries, skips) — ask the AI
-                    SetState(AgentState.Deciding);
-                    OnOutput?.Invoke($"Analyzing project state ({stats.Pending} pending, {stats.Completed} done, {stats.Failed} failed, {_runningAgents.Count} running)...");
-                    decision = await GetNextDecisionAsync(cancellationToken);
+                        OnOutput?.Invoke("All tasks resolved. Declaring complete.");
+                        break;
+                    }
 
-                    if (decision == null)
+                    // Priority: if user messages are pending, force an AI decision cycle
+                    // so the lead can act on them (add tasks, re-read plan, etc.)
+                    if (_pendingUserMessages.Count > 0)
                     {
-                        _consecutiveParseFailures++;
-                        if (_consecutiveParseFailures >= MaxParseFailures)
+                        SetState(AgentState.Deciding);
+                        OnOutput?.Invoke($"Processing {_pendingUserMessages.Count} user message(s)...");
+                        var userDecision = await GetNextDecisionAsync(cancellationToken);
+                        _pendingUserMessages.Clear();
+
+                        if (userDecision != null)
                         {
-                            OnOutput?.Invoke($"Failed to parse decision {MaxParseFailures}x, falling back to sequential");
-                            decision = CreateFallbackDecision();
+                            OnDecision?.Invoke(userDecision);
+                            OnOutput?.Invoke($"Decision: {userDecision.Action} {userDecision.TaskId ?? ""} — {userDecision.Reason ?? ""}");
+                            await ExecuteDecisionAsync(userDecision, cancellationToken);
+                        }
+                        continue;
+                    }
+
+                    // If all slots full or no claimable tasks, wait for an agent to finish
+                    if (_runningAgents.Count >= MaxConcurrent || (stats.Pending == 0 && _runningAgents.Count > 0))
+                    {
+                        SetState(AgentState.Idle);
+                        var runningIds = string.Join(", ", _runningAgents.Keys);
+                        OnOutput?.Invoke($"All {_runningAgents.Count} agent slots active ({runningIds}), waiting for completion...");
+                        await WaitForAnyAgentCompletionAsync(cancellationToken);
+                        continue;
+                    }
+
+                    // Fast-path: if there are claimable tasks and free slots, skip the AI
+                    // entirely and just pick the highest-priority pending task.
+                    // Only consult the AI for complex decisions (retries, skips, all tasks done).
+                    var claimable = _taskStore.GetClaimable();
+                    LeadDecision? decision;
+
+                    if (claimable.Count > 0)
+                    {
+                        var next = claimable.OrderBy(t => t.Priority).First();
+                        decision = new LeadDecision
+                        {
+                            Action = LeadAction.NextTask,
+                            TaskId = next.TaskId,
+                            Reason = $"Next highest-priority pending task"
+                        };
+                        OnOutput?.Invoke($"Fast-assigning task {next.TaskId}: {next.Title ?? next.Description}");
+                        _consecutiveParseFailures = 0;
+                    }
+                    else if (stats.Failed > 0)
+                    {
+                        // Complex decision needed (retries, skips) — ask the AI
+                        SetState(AgentState.Deciding);
+                        OnOutput?.Invoke($"Analyzing project state ({stats.Pending} pending, {stats.Completed} done, {stats.Failed} failed, {_runningAgents.Count} running)...");
+                        decision = await GetNextDecisionAsync(cancellationToken);
+
+                        if (decision == null)
+                        {
+                            _consecutiveParseFailures++;
+                            if (_consecutiveParseFailures >= MaxParseFailures)
+                            {
+                                OnOutput?.Invoke($"Failed to parse decision {MaxParseFailures}x, falling back to sequential");
+                                decision = CreateFallbackDecision();
+                            }
+                            else
+                            {
+                                OnError?.Invoke("Failed to parse lead decision, retrying...");
+                                continue;
+                            }
                         }
                         else
                         {
-                            OnError?.Invoke("Failed to parse lead decision, retrying...");
-                            continue;
+                            _consecutiveParseFailures = 0;
                         }
                     }
                     else
                     {
-                        _consecutiveParseFailures = 0;
+                        // No claimable, no failed — agents still running, wait
+                        if (_runningAgents.Count > 0)
+                        {
+                            OnOutput?.Invoke($"No pending tasks, waiting for {_runningAgents.Count} running agent(s)...");
+                            await WaitForAnyAgentCompletionAsync(cancellationToken);
+                            continue;
+                        }
+                        // Nothing left — declare complete
+                        decision = new LeadDecision
+                        {
+                            Action = LeadAction.DeclareComplete,
+                            Reason = "All tasks resolved"
+                        };
                     }
-                }
-                else
-                {
-                    // No claimable, no failed — agents still running, wait
-                    if (_runningAgents.Count > 0)
+
+                    if (decision == null)
                     {
-                        OnOutput?.Invoke($"No pending tasks, waiting for {_runningAgents.Count} running agent(s)...");
-                        await WaitForAnyAgentCompletionAsync(cancellationToken);
+                        // No claimable tasks but agents still running — wait
+                        if (_runningAgents.Count > 0)
+                        {
+                            await WaitForAnyAgentCompletionAsync(cancellationToken);
+                        }
                         continue;
                     }
-                    // Nothing left — declare complete
-                    decision = new LeadDecision
-                    {
-                        Action = LeadAction.DeclareComplete,
-                        Reason = "All tasks resolved"
-                    };
-                }
 
-                if (decision == null)
+                    OnDecision?.Invoke(decision);
+                    OnOutput?.Invoke($"Decision: {decision.Action} {decision.TaskId ?? ""} — {decision.Reason ?? ""}");
+
+                    await ExecuteDecisionAsync(decision, cancellationToken);
+                }
+                catch (OperationCanceledException)
                 {
-                    // No claimable tasks but agents still running — wait
-                    if (_runningAgents.Count > 0)
-                    {
-                        await WaitForAnyAgentCompletionAsync(cancellationToken);
-                    }
-                    continue;
+                    throw; // Propagate cancellation
                 }
-
-                OnDecision?.Invoke(decision);
-                OnOutput?.Invoke($"Decision: {decision.Action} {decision.TaskId ?? ""} — {decision.Reason ?? ""}");
-
-                await ExecuteDecisionAsync(decision, cancellationToken);
+                catch (Exception ex)
+                {
+                    // Log the error but keep the decision loop alive
+                    OnError?.Invoke($"[Lead] Error in decision loop: {ex.Message}");
+                    OnOutput?.Invoke($"Lead recovering from error: {ex.Message}");
+                    _pendingUserMessages.Clear(); // Clear messages that may have caused the error
+                    await Task.Delay(2000, cancellationToken); // Brief pause before retrying
+                }
             }
 
             // Wait for all remaining agents to finish

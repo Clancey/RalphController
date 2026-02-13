@@ -1,3 +1,4 @@
+using RalphController.Messaging;
 using RalphController.Models;
 using RalphController.Git;
 using RalphController.Merge;
@@ -34,6 +35,11 @@ public class LeadAgent : IDisposable
     private DateTime _lastAgentFailure = DateTime.MinValue;
     private static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(3);
 
+    // User messaging support
+    private readonly MessageBus? _messageBus;
+    private readonly List<Message> _pendingUserMessages = new();
+    private readonly SemaphoreSlim _messageSignal = new(0);
+
     /// <summary>Current state of the lead agent</summary>
     public AgentState State { get; private set; } = AgentState.Idle;
 
@@ -60,13 +66,15 @@ public class LeadAgent : IDisposable
         TeamConfig teamConfig,
         TaskStore taskStore,
         GitWorktreeManager gitManager,
-        MergeManager mergeManager)
+        MergeManager mergeManager,
+        MessageBus? messageBus = null)
     {
         _config = config;
         _teamConfig = teamConfig;
         _taskStore = taskStore;
         _gitManager = gitManager;
         _mergeManager = mergeManager;
+        _messageBus = messageBus;
         _leadModel = teamConfig.LeadModel;
 
         var modelLabel = _leadModel?.DisplayName ?? config.Provider.ToString();
@@ -77,6 +85,33 @@ public class LeadAgent : IDisposable
             State = AgentState.Spawning,
             AssignedModel = _leadModel
         };
+    }
+
+    /// <summary>
+    /// Wake the lead from idle when a user message arrives.
+    /// </summary>
+    public void NotifyMessageAvailable()
+    {
+        // Release the semaphore so WaitForAnyAgentCompletionAsync wakes up
+        _messageSignal.Release();
+    }
+
+    /// <summary>
+    /// Poll the message bus for new user messages and queue them.
+    /// </summary>
+    private void ProcessPendingMessages()
+    {
+        if (_messageBus == null) return;
+
+        var messages = _messageBus.Poll();
+        foreach (var msg in messages)
+        {
+            if (msg.Type == MessageType.Text)
+            {
+                _pendingUserMessages.Add(msg);
+                OnOutput?.Invoke($"User message received: {msg.Content}");
+            }
+        }
     }
 
     /// <summary>
@@ -95,6 +130,9 @@ public class LeadAgent : IDisposable
                 // Reap any completed agents first
                 await ReapCompletedAgentsAsync(cancellationToken);
 
+                // Check for new user messages
+                ProcessPendingMessages();
+
                 // Backoff after rapid failures to prevent agent churn
                 var timeSinceFailure = DateTime.UtcNow - _lastAgentFailure;
                 if (timeSinceFailure < FailureBackoff)
@@ -107,11 +145,30 @@ public class LeadAgent : IDisposable
                 var stats = _taskStore.GetStatistics();
                 OnQueueUpdate?.Invoke(stats);
 
-                // Check if we're done: no pending tasks, nothing running
-                if (stats.Pending == 0 && stats.InProgress == 0 && _runningAgents.IsEmpty)
+                // Check if we're done: no pending tasks, nothing running, no user messages
+                if (stats.Pending == 0 && stats.InProgress == 0 && _runningAgents.IsEmpty
+                    && _pendingUserMessages.Count == 0)
                 {
                     OnOutput?.Invoke("All tasks resolved. Declaring complete.");
                     break;
+                }
+
+                // Priority: if user messages are pending, force an AI decision cycle
+                // so the lead can act on them (add tasks, re-read plan, etc.)
+                if (_pendingUserMessages.Count > 0)
+                {
+                    SetState(AgentState.Deciding);
+                    OnOutput?.Invoke($"Processing {_pendingUserMessages.Count} user message(s)...");
+                    var userDecision = await GetNextDecisionAsync(cancellationToken);
+                    _pendingUserMessages.Clear();
+
+                    if (userDecision != null)
+                    {
+                        OnDecision?.Invoke(userDecision);
+                        OnOutput?.Invoke($"Decision: {userDecision.Action} {userDecision.TaskId ?? ""} — {userDecision.Reason ?? ""}");
+                        await ExecuteDecisionAsync(userDecision, cancellationToken);
+                    }
+                    continue;
                 }
 
                 // If all slots full or no claimable tasks, wait for an agent to finish
@@ -267,14 +324,17 @@ public class LeadAgent : IDisposable
     }
 
     /// <summary>
-    /// Wait until at least one running agent completes.
+    /// Wait until at least one running agent completes or a user message arrives.
     /// </summary>
     private async Task WaitForAnyAgentCompletionAsync(CancellationToken ct)
     {
         if (_runningAgents.IsEmpty) return;
 
-        var tasks = _runningAgents.Values.Select(r => r.BackgroundTask).ToArray();
-        await Task.WhenAny(tasks).WaitAsync(ct);
+        var agentTasks = _runningAgents.Values.Select(r => (Task)r.BackgroundTask).ToList();
+        // Also wait for a user message signal so we wake up to handle it
+        agentTasks.Add(_messageSignal.WaitAsync(ct));
+
+        await Task.WhenAny(agentTasks).WaitAsync(ct);
 
         // Now reap the completed ones
         await ReapCompletedAgentsAsync(ct);
@@ -712,18 +772,41 @@ public class LeadAgent : IDisposable
             sb.AppendLine();
         }
 
+        // User messages (priority)
+        if (_pendingUserMessages.Count > 0)
+        {
+            sb.AppendLine("--- USER MESSAGES (PRIORITY) ---");
+            sb.AppendLine("The human user has sent the following messages. Act on them with highest priority.");
+            sb.AppendLine("You may add_task for new work, re-read the plan, adjust priorities, or take other actions.");
+            sb.AppendLine();
+            foreach (var msg in _pendingUserMessages)
+            {
+                sb.AppendLine($"  [{msg.Timestamp:HH:mm:ss}] {msg.Content}");
+            }
+            sb.AppendLine();
+        }
+
         // Decision format
         sb.AppendLine("--- DECISION FORMAT ---");
-        sb.AppendLine("You are being consulted because there are failed tasks that may need retry or skip decisions.");
+        if (_pendingUserMessages.Count > 0)
+        {
+            sb.AppendLine("You are being consulted because the user sent a message. Respond to the user's request.");
+        }
+        else
+        {
+            sb.AppendLine("You are being consulted because there are failed tasks that may need retry or skip decisions.");
+        }
         sb.AppendLine("You MUST output your decision in this exact format:");
         sb.AppendLine();
         sb.AppendLine("---LEAD_DECISION---");
-        sb.AppendLine("ACTION: retry_task | skip_task | declare_complete");
-        sb.AppendLine("TASK_ID: <task id, required for retry_task/skip_task>");
+        sb.AppendLine("ACTION: next_task | retry_task | add_task | skip_task | declare_complete");
+        sb.AppendLine("TASK_ID: <task id, required for retry_task/skip_task/next_task>");
+        sb.AppendLine("NEW_TASK_TITLE: <title, required for add_task>");
+        sb.AppendLine("NEW_TASK_DESCRIPTION: <description, required for add_task>");
         sb.AppendLine("REASON: <brief explanation>");
         sb.AppendLine("---END_DECISION---");
         sb.AppendLine();
-        sb.AppendLine("Choose retry_task to retry a failed task, skip_task to skip it, or declare_complete if all remaining failures are acceptable.");
+        sb.AppendLine("Actions: next_task (assign pending task), retry_task (retry failed), add_task (create new task), skip_task (skip a task), declare_complete (all done).");
         sb.AppendLine("Output exactly ONE decision block. Be concise — do not list tasks or analyze at length.");
 
         return sb.ToString();
@@ -831,6 +914,7 @@ public class LeadAgent : IDisposable
         }
         _runningAgents.Clear();
         _mergeLock.Dispose();
+        _messageSignal.Dispose();
 
         GC.SuppressFinalize(this);
     }

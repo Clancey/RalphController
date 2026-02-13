@@ -24,6 +24,7 @@ public class TeamOrchestrator : IDisposable
     private readonly ConcurrentDictionary<string, AgentMonitorInfo> _agentMonitor = new();
     private readonly SemaphoreSlim _mergeSemaphore;
     private MessageBus? _leadBus;
+    private LeadAgent? _leadAgent;
     private CancellationTokenSource? _stopCts;
     private bool _disposed;
     private volatile TeamOrchestratorState _state = TeamOrchestratorState.Idle;
@@ -163,7 +164,8 @@ public class TeamOrchestrator : IDisposable
             _teamConfig,
             _taskStore,
             _gitManager,
-            _mergeManager);
+            _mergeManager,
+            _leadBus);
 
         // Wire lead events to orchestrator events
         leadAgent.OnOutput += output => OnOutput?.Invoke(output);
@@ -195,12 +197,14 @@ public class TeamOrchestrator : IDisposable
         var taskStats = _taskStore.GetStatistics();
         OnOutput?.Invoke($"Lead agent ready — {taskStats.Total} tasks queued, starting decision loop...");
 
+        _leadAgent = leadAgent;
         try
         {
             await leadAgent.RunAsync(cancellationToken);
         }
         finally
         {
+            _leadAgent = null;
             leadAgent.Dispose();
         }
 
@@ -647,6 +651,16 @@ public class TeamOrchestrator : IDisposable
     {
         _taskStore.CancelTask(taskId);
         OnOutput?.Invoke($"Task {taskId} cancelled");
+    }
+
+    /// <summary>
+    /// Send a user message to the lead agent (lead-driven mode).
+    /// </summary>
+    public void SendMessageToLead(string message)
+    {
+        if (_leadBus == null) return;
+        _leadBus.Send(Message.TextMessage("user", "lead", message));
+        _leadAgent?.NotifyMessageAvailable();
     }
 
     public void RequestShutdown(string agentId)

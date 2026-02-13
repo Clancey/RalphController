@@ -387,7 +387,23 @@ public sealed class TeamsTUI : IDisposable
 
         if (targetAgentId == null) return;
 
-        // Use the orchestrator's agents to find the message bus
+        // Lead-driven mode: route to lead agent
+        if (targetAgentId == "lead")
+        {
+            _orchestrator.SendMessageToLead(message);
+            _outputBuffers.Append("lead", $"[You] {message}");
+            return;
+        }
+
+        // Task-agent in lead-driven mode: route to lead with context
+        if (targetAgentId.StartsWith("task-agent-", StringComparison.OrdinalIgnoreCase))
+        {
+            _orchestrator.SendMessageToLead($"[re: {targetAgentId}] {message}");
+            _outputBuffers.Append(targetAgentId, $"[You → lead] {message}");
+            return;
+        }
+
+        // Parallel mode: send directly to the TeamAgent's message bus
         if (_orchestrator.Agents.TryGetValue(targetAgentId, out var agent) && agent.MessageBus != null)
         {
             agent.MessageBus.Send(Message.TextMessage("user", targetAgentId, message));

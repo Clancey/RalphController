@@ -678,7 +678,7 @@ public class TeamAgent : IDisposable
                         _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage);
                     break;
                 default:
-                    result = await _mergeManager.SequentialMergeAsync(
+                    result = await _mergeManager.RebaseAndMergeAsync(
                         _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage);
                     break;
             }

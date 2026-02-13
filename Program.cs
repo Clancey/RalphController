@@ -1669,7 +1669,7 @@ else if (teamsMode)
     var modelAssignment = AgentModelAssignment.SameAsLead;
     var agentModels = new List<ModelSpec>();
     var decomposition = DecompositionStrategy.AIDecomposed;
-    var mergeStrategy = MergeStrategy.Sequential;
+    var mergeStrategy = MergeStrategy.RebaseThenMerge;
     var leadDriven = false;
     var teamStep = 0;
     while (teamStep < 6) // Steps: 0=agents, 1=lead, 2=assignment, 3=decomposition, 4=merge, 5=mode
@@ -1801,9 +1801,8 @@ else if (teamsMode)
                 var mergeChoices = new List<string>
                 {
                     goBackChoice,
-                    "Sequential (safest)",
-                    "Rebase then merge",
-                    "Direct merge"
+                    "Rebase then merge (default, safest)",
+                    "Direct merge (faster, more conflict-prone)"
                 };
 
                 var mergeChoice = AnsiConsole.Prompt(
@@ -1815,9 +1814,8 @@ else if (teamsMode)
 
                 mergeStrategy = mergeChoice switch
                 {
-                    var s when s.StartsWith("Rebase") => MergeStrategy.RebaseThenMerge,
                     var s when s.StartsWith("Direct") => MergeStrategy.MergeDirect,
-                    _ => MergeStrategy.Sequential
+                    _ => MergeStrategy.RebaseThenMerge
                 };
 
                 teamStep++;

@@ -678,19 +678,6 @@ public class MergeManager : IDisposable
     }
 
     /// <summary>
-    /// Sequential merge (one at a time, with rebase).
-    /// </summary>
-    public async Task<MergeResult> SequentialMergeAsync(
-        string worktreePath,
-        string branchName,
-        string targetBranch,
-        CancellationToken cancellationToken = default,
-        string? commitMessage = null)
-    {
-        return await RebaseAndMergeAsync(worktreePath, branchName, targetBranch, cancellationToken, commitMessage);
-    }
-
-    /// <summary>
     /// Detect conflicts in a directory by inspecting git's unmerged paths.
     /// </summary>
     public List<GitConflict> DetectConflicts(string directory)
@@ -844,11 +831,9 @@ public class MergeManager : IDisposable
 
         return _teamConfig.MergeStrategy switch
         {
-            MergeStrategy.RebaseThenMerge => await RebaseAndMergeAsync(
-                worktreePath, branchName, targetBranch, ct, commitMessage),
             MergeStrategy.MergeDirect => await MergeDirectAsync(
                 worktreePath, branchName, targetBranch, ct, commitMessage),
-            _ => await SequentialMergeAsync(
+            _ => await RebaseAndMergeAsync(
                 worktreePath, branchName, targetBranch, ct, commitMessage)
         };
     }

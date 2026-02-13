@@ -34,6 +34,7 @@ RalphController automates the Ralph Wiggum technique:
 - **Rate Limiting**: Configurable API calls/hour (default: 100)
 - **RALPH_STATUS**: Structured status reporting for progress tracking
 - **Priority Levels**: High/Medium/Low task prioritization
+- **Teams Mode**: Parallel agents with git worktree isolation, AI-driven task decomposition, and automated merge conflict resolution
 
 ## Quick Start
 
@@ -163,6 +164,9 @@ ralph --list-models
 
 # Ignore saved settings from .ralph.json
 ralph --fresh
+
+# Run in teams mode (parallel agents)
+ralph --teams
 
 ```
 
@@ -574,6 +578,165 @@ You can also configure multi-model directly in your `.ralph.json`:
 4. If verifier makes **any changes** → not truly done, continue with primary
 
 This elegant approach requires no special verification prompts - just run another model and see if it agrees nothing needs to change.
+
+## Teams Mode
+
+RalphController can coordinate multiple AI agents working in parallel on different parts of your codebase. Instead of one agent handling everything sequentially, teams mode decomposes tasks into subtasks and assigns them to agents running concurrently in isolated git worktrees.
+
+### Quick Start
+
+```bash
+# Launch teams setup wizard
+ralph --teams
+
+# After first setup, teams config is saved — just run ralph
+ralph
+
+```
+
+Config is saved in `.ralph.json` under the `teams` key. Once saved, running `ralph` will auto-detect and use the saved teams config without the `--teams` flag.
+
+### Setup Wizard
+
+Running `ralph --teams` walks you through 6 steps (with back navigation at each step):
+
+| Step | Setting | Options | Default |
+|------|---------|---------|---------|
+| 1 | Number of sub-agents | 2-8 | 3 |
+| 2 | Lead agent model | Any provider/model | Current provider |
+| 3 | Sub-agent models | Same as lead / Per-agent / Round-robin | Same as lead |
+| 4 | Task decomposition | AI decomposed / From implementation_plan.md | AI decomposed |
+| 5 | Merge strategy | Rebase then merge / Direct merge | Rebase then merge |
+| 6 | Execution mode | Parallel / Lead-driven | Parallel |
+
+### Execution Modes
+
+#### Parallel Mode
+
+All agents run concurrently, claiming tasks from a shared queue:
+
+1. Lead agent decomposes the task into independent subtasks
+2. Sub-agents work simultaneously in separate git worktrees
+3. As agents finish, their worktrees are merged back to the target branch
+4. Conflicts are resolved automatically via AI
+
+Best for large features that decompose into independent pieces with minimal file overlap.
+
+#### Lead-Driven Mode (3-Tier)
+
+A lead agent orchestrates ephemeral TaskAgents through three sequential phases:
+
+1. **Plan** — Read-only analysis, produces an implementation plan
+2. **Code** — Implementation, commits to worktree
+3. **Verify** — Runs build/test command (configurable via `verifyCommand`), fixes failures
+
+The lead manages the task queue, assigns work, and handles merging. Up to `agentCount` TaskAgents run concurrently. Failed tasks are retried up to `maxRetries` times (default: 2).
+
+Best for tasks requiring careful planning, or when you want build verification before merging.
+
+### Git Strategy & Merge Behavior
+
+Teams mode uses git worktrees to isolate each agent's work:
+
+```
+your-project/
+├── .ralph-worktrees/
+│   ├── task-agent-1/    # Agent 1's isolated worktree
+│   ├── task-agent-2/    # Agent 2's isolated worktree
+│   └── task-agent-3/    # Agent 3's isolated worktree
+└── (your code)          # Main worktree, stays on target branch
+```
+
+Each agent gets its own branch and working directory. Worktrees are cleaned up automatically after successful merges (configurable via `cleanupWorktreesOnSuccess`).
+
+#### Merge Strategies
+
+Both strategies use **squash merges** to keep the target branch history clean (one commit per task). Before any merge, the agent's branch is **rebased onto the latest target branch** to incorporate previously merged work.
+
+| Strategy | How It Works | Trade-off |
+|----------|-------------|-----------|
+| **Rebase then merge** (default) | Rebase onto target, then squash merge. | Safest. Agents always see the latest state before merging, minimizing conflicts. |
+| **Direct merge** | Squash merge without the strategy-level rebase. (The pre-merge rebase in the lead agent still runs.) | Slightly faster, but if the pre-merge rebase fails, falls through to conflict resolution. |
+
+**Example with 3 agents (Rebase then merge):**
+
+```
+Target branch starts at: abc123
+
+Agent 1 finishes first:
+  1. Rebase agent-1 branch onto target (abc123)
+  2. Squash merge → target moves to def456
+
+Agent 3 finishes next:
+  1. Rebase agent-3 branch onto target (def456 — includes Agent 1's work)
+  2. Squash merge → target moves to ghi789
+
+Agent 2 finishes last:
+  1. Rebase agent-2 branch onto target (ghi789 — includes Agents 1 & 3)
+  2. Squash merge → target moves to jkl012
+```
+
+### Conflict Resolution
+
+When merge conflicts occur, Ralph uses a two-step resolution process:
+
+**Step 1: AI Negotiation** — `ConflictNegotiator` reads the conflict markers and asks the AI model to resolve the diffs textually. Fast and low token usage.
+
+**Step 2: Merge-Fix Agent** (fallback) — If negotiation fails, a full AI coding agent is spawned in the merge directory with complete tool access. It can read files, edit them, run builds, stage changes, and iterate until the merge is clean. Slower but handles complex logical conflicts.
+
+| Mode | Behavior |
+|------|----------|
+| **AINegotiated** (default) | Tries text-based negotiation, falls back to merge-fix agent |
+| **LastWriterWins** | Auto-resolves by keeping the last merged agent's version |
+| **Manual** | Stops and waits for manual conflict resolution |
+
+### Manual Configuration
+
+Teams settings are saved in `.ralph.json`:
+
+```json
+{
+  "teams": {
+    "agentCount": 3,
+    "leadModel": {
+      "provider": "Claude",
+      "model": "sonnet",
+      "label": "sonnet"
+    },
+    "agentModels": [],
+    "modelAssignment": "SameAsLead",
+    "decompositionStrategy": "AIDecomposed",
+    "mergeStrategy": "RebaseThenMerge",
+    "conflictResolution": "AINegotiated",
+    "useWorktrees": true,
+    "leadDriven": false,
+    "verifyCommand": "dotnet build && dotnet test",
+    "subAgentPhases": ["Plan", "Code", "Verify"],
+    "maxRetries": 2,
+    "leadDecisionTimeoutSeconds": 300,
+    "cleanupWorktreesOnSuccess": true
+  }
+}
+```
+
+**Configuration Reference:**
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `agentCount` | int | 3 | Number of sub-agents (2-8) |
+| `leadModel` | object | — | Lead agent provider/model |
+| `agentModels` | array | [] | Models for sub-agents (per-agent or round-robin) |
+| `modelAssignment` | string | SameAsLead | `SameAsLead` / `PerAgent` / `RoundRobin` |
+| `decompositionStrategy` | string | AIDecomposed | `AIDecomposed` / `FromPlan` |
+| `mergeStrategy` | string | RebaseThenMerge | `RebaseThenMerge` / `MergeDirect` |
+| `conflictResolution` | string | AINegotiated | `AINegotiated` / `LastWriterWins` / `Manual` |
+| `useWorktrees` | bool | true | Isolate agents in git worktrees |
+| `leadDriven` | bool | false | Use lead-driven 3-tier mode |
+| `verifyCommand` | string | — | Shell command for verify phase |
+| `subAgentPhases` | array | [Plan, Code, Verify] | Phases for lead-driven TaskAgents |
+| `maxRetries` | int | 2 | Max retries for failed tasks |
+| `leadDecisionTimeoutSeconds` | int | 300 | Timeout before falling back to sequential assignment |
+| `cleanupWorktreesOnSuccess` | bool | true | Remove worktrees after successful merge |
 
 ## Testing & Debug Modes
 

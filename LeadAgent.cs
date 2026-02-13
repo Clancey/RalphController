@@ -624,11 +624,9 @@ public class LeadAgent : IDisposable
 
         return _teamConfig.MergeStrategy switch
         {
-            MergeStrategy.RebaseThenMerge => await _mergeManager.RebaseAndMergeAsync(
-                taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage),
             MergeStrategy.MergeDirect => await _mergeManager.MergeDirectAsync(
                 taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage),
-            _ => await _mergeManager.SequentialMergeAsync(
+            _ => await _mergeManager.RebaseAndMergeAsync(
                 taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage)
         };
     }

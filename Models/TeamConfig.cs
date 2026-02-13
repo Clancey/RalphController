@@ -26,7 +26,7 @@ public record TeamConfig
 
     /// <summary>Strategy for merging agent work back to target</summary>
     [JsonConverter(typeof(JsonStringEnumConverter))]
-    public MergeStrategy MergeStrategy { get; init; } = MergeStrategy.Sequential;
+    public MergeStrategy MergeStrategy { get; init; } = MergeStrategy.RebaseThenMerge;
 
     /// <summary>How to resolve conflicts between agents</summary>
     [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -308,14 +308,11 @@ public enum DecompositionStrategy
 /// </summary>
 public enum MergeStrategy
 {
-    /// <summary>Rebase onto target, then merge (minimizes conflicts)</summary>
+    /// <summary>Rebase onto target, then squash merge (default, minimizes conflicts)</summary>
     RebaseThenMerge,
 
-    /// <summary>Direct merge (faster but more conflicts)</summary>
-    MergeDirect,
-
-    /// <summary>One merge at a time (safest)</summary>
-    Sequential
+    /// <summary>Squash merge without strategy-level rebase (faster but more conflict-prone)</summary>
+    MergeDirect
 }
 
 /// <summary>

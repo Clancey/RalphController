@@ -24,6 +24,12 @@ public static class AIProcessRunner
         Action<string>? onOutput = null,
         CancellationToken cancellationToken = default)
     {
+        // CopilotSdk uses an in-process SDK, not a CLI process
+        if (providerConfig.Provider == AIProvider.CopilotSdk)
+        {
+            return await RunCopilotSdkAsync(providerConfig, prompt, workingDir, onOutput, cancellationToken);
+        }
+
         string? tempPromptFile = null;
         string? tempScriptFile = null;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -185,6 +191,57 @@ public static class AIProcessRunner
                 try { File.Delete(tempPromptFile); } catch { }
             if (tempScriptFile != null && File.Exists(tempScriptFile))
                 try { File.Delete(tempScriptFile); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Run a prompt via the Copilot SDK (in-process, not CLI).
+    /// Maps CopilotSdkResult → AgentProcessResult so callers don't need to know the difference.
+    /// </summary>
+    private static async Task<AgentProcessResult> RunCopilotSdkAsync(
+        AIProviderConfig providerConfig,
+        string prompt,
+        string workingDir,
+        Action<string>? onOutput,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var model = providerConfig.Arguments; // Model name stored in Arguments
+        var token = string.IsNullOrEmpty(providerConfig.ExecutablePath) ? null : providerConfig.ExecutablePath;
+        var outputChars = 0L;
+
+        try
+        {
+            using var client = new CopilotSdkClient(workingDir, model, token);
+
+            client.OnOutput += text =>
+            {
+                outputChars += text.Length;
+                onOutput?.Invoke(text);
+            };
+            client.OnToolCall += (name, _) => onOutput?.Invoke($"[Tool: {name}]");
+            client.OnError += err => onOutput?.Invoke($"[ERROR] {err}");
+
+            var result = await client.RunAsync(prompt, cancellationToken);
+
+            return new AgentProcessResult
+            {
+                Success = result.Success,
+                Output = result.Output,
+                ParsedText = result.Output,
+                Error = result.Error,
+                OutputChars = outputChars,
+                Duration = stopwatch.Elapsed
+            };
+        }
+        catch (Exception ex)
+        {
+            return new AgentProcessResult
+            {
+                Success = false,
+                Error = ex.Message,
+                Duration = stopwatch.Elapsed
+            };
         }
     }
 

@@ -160,6 +160,7 @@ static bool IsProviderInstalled(AIProvider provider)
         AIProvider.Cursor => "cursor",
         AIProvider.OpenCode => "opencode",
         AIProvider.Ollama => null,  // Ollama uses HTTP, not CLI - always available
+        AIProvider.CopilotSdk => null,  // CopilotSdk uses SDK directly, no CLI needed
         _ => null
     };
 
@@ -390,6 +391,24 @@ static async Task<ModelSpec?> PromptForModelSpec(string label, string? defaultOl
                 if (model.Equals("back", StringComparison.OrdinalIgnoreCase)) return null;
             }
             break;
+
+        case AIProvider.CopilotSdk:
+            var csdkModels = new List<string> { "← Go back" };
+            csdkModels.AddRange(await GetCopilotSdkModels());
+            csdkModels.Add("Enter custom model...");
+            model = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]Select Copilot SDK model:[/]")
+                    .PageSize(15)
+                    .AddChoices(csdkModels));
+            if (model == "← Go back") return null;
+            if (model == "Enter custom model...")
+            {
+                model = AnsiConsole.Prompt(
+                    new TextPrompt<string>("[yellow]Enter model name:[/]")
+                        .DefaultValue("gpt-5"));
+            }
+            break;
     }
 
     // Create a descriptive label using the actual model name
@@ -516,6 +535,36 @@ static async Task<List<string>> GetOllamaModels(string baseUrl)
         AnsiConsole.MarkupLine($"[dim]Could not fetch models from server: {ex.Message}[/]");
         return new List<string>();
     }
+}
+
+static async Task<List<string>> GetCopilotSdkModels()
+{
+    // Try to fetch available models from the SDK at runtime
+    var fallbackModels = new List<string>
+    {
+        "gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2",
+        "claude-sonnet-4.5", "claude-opus-4.5", "claude-opus-4.6",
+        "gemini-2.5-pro"
+    };
+
+    try
+    {
+        await using var client = new GitHub.Copilot.SDK.CopilotClient();
+        await client.StartAsync();
+        var models = await client.ListModelsAsync();
+        var modelIds = models.Select(m => m.Id).Where(id => !string.IsNullOrEmpty(id)).ToList();
+        if (modelIds.Count > 0)
+        {
+            return modelIds!;
+        }
+    }
+    catch
+    {
+        // SDK not available or not authenticated — fall back to known models
+        AnsiConsole.MarkupLine("[dim]Could not fetch models from Copilot SDK (not authenticated?). Using known models.[/]");
+    }
+
+    return fallbackModels;
 }
 
 // Check for test modes
@@ -779,7 +828,7 @@ string? ralphFolderFromArgs = null;
 var validArgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 {
     "--provider", "--model", "--api-url", "--url", "--ralph-folder",
-    "--codex", "--copilot", "--claude", "--gemini", "--cursor", "--opencode", "--ollama", "--lmstudio",
+    "--codex", "--copilot", "--claude", "--gemini", "--cursor", "--opencode", "--ollama", "--copilot-sdk", "--lmstudio",
     "--list-models", "--fresh", "--init", "--spec", "--no-tui", "--console",
     "--test-streaming", "--single-run", "--test-aiprocess", "--test-output",
     "--teams"
@@ -818,6 +867,7 @@ for (int i = 0; i < args.Length; i++)
             "cursor" => AIProvider.Cursor,
             "opencode" => AIProvider.OpenCode,
             "ollama" => AIProvider.Ollama,
+            "copilotsdk" => AIProvider.CopilotSdk,
             _ => null
         };
     }
@@ -865,6 +915,10 @@ for (int i = 0; i < args.Length; i++)
         providerFromArgs = AIProvider.Ollama;
         // URL will be prompted or loaded from saved settings
     }
+    else if (args[i] == "--copilot-sdk")
+    {
+        providerFromArgs = AIProvider.CopilotSdk;
+    }
     else if (args[i] == "--lmstudio")
     {
         providerFromArgs = AIProvider.Ollama; // LMStudio uses same API
@@ -903,7 +957,7 @@ if (unknownArgs.Count > 0)
 {
     AnsiConsole.MarkupLine($"[red]Error: Unknown argument(s): {string.Join(", ", unknownArgs)}[/]");
     AnsiConsole.MarkupLine("\n[yellow]Valid arguments:[/]");
-    AnsiConsole.MarkupLine("  [dim]--provider <name>[/]     Select AI provider (claude, codex, copilot, gemini, cursor, opencode, ollama)");
+    AnsiConsole.MarkupLine("  [dim]--provider <name>[/]     Select AI provider (claude, codex, copilot, gemini, cursor, opencode, ollama, copilotsdk)");
     AnsiConsole.MarkupLine("  [dim]--model <name>[/]        Select model for the provider");
     AnsiConsole.MarkupLine("  [dim]--api-url <url>[/]       API URL for Ollama/LMStudio");
     AnsiConsole.MarkupLine("  [dim]--ralph-folder <path>[/] Store project files in a subfolder (e.g. .ralph)");
@@ -912,7 +966,7 @@ if (unknownArgs.Count > 0)
     AnsiConsole.MarkupLine("  [dim]--no-tui[/]              Run without TUI (plain console output)");
     AnsiConsole.MarkupLine("  [dim]--list-models[/]         List available models");
     AnsiConsole.MarkupLine("  [dim]--teams[/]                Run in teams mode (parallel agents)");
-    AnsiConsole.MarkupLine("\n[dim]Provider shortcuts: --claude, --codex, --copilot, --gemini, --cursor, --opencode, --ollama, --lmstudio[/]");
+    AnsiConsole.MarkupLine("\n[dim]Provider shortcuts: --claude, --codex, --copilot, --gemini, --cursor, --opencode, --ollama, --copilot-sdk, --lmstudio[/]");
     return 1;
 }
 
@@ -1036,6 +1090,7 @@ string? copilotModel = null;
 string? openCodeModel = null;
 string? ollamaUrl = null;
 string? ollamaModel = null;
+string? copilotSdkModel = null;
 
 // Cache installed providers so detection only happens once
 List<AIProvider>? installedProviders = null;
@@ -1300,6 +1355,44 @@ if (provider == AIProvider.Copilot)
     AnsiConsole.MarkupLine($"[green]Model:[/] {copilotModel}");
 }
 
+// For CopilotSdk, handle model selection
+copilotSdkModel = null;
+if (provider == AIProvider.CopilotSdk)
+{
+    if (!string.IsNullOrEmpty(modelFromArgs))
+    {
+        copilotSdkModel = modelFromArgs;
+        projectSettings.CopilotSdkModel = copilotSdkModel;
+    }
+    else if (!freshMode && !string.IsNullOrEmpty(projectSettings.CopilotSdkModel))
+    {
+        copilotSdkModel = projectSettings.CopilotSdkModel;
+        AnsiConsole.MarkupLine($"[dim]Using saved model: {copilotSdkModel}[/]");
+    }
+    else
+    {
+        var copilotSdkModels = await GetCopilotSdkModels();
+        copilotSdkModels.Add("Enter custom model...");
+
+        copilotSdkModel = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("[yellow]Select Copilot SDK model:[/]")
+                .PageSize(15)
+                .AddChoices(copilotSdkModels));
+
+        if (copilotSdkModel == "Enter custom model...")
+        {
+            copilotSdkModel = AnsiConsole.Prompt(
+                new TextPrompt<string>("[yellow]Enter model name:[/]")
+                    .DefaultValue("gpt-5"));
+        }
+
+        projectSettings.CopilotSdkModel = copilotSdkModel;
+    }
+
+    AnsiConsole.MarkupLine($"[green]Model:[/] {copilotSdkModel}");
+}
+
 // For OpenCode, handle model selection
 if (provider == AIProvider.OpenCode)
 {
@@ -1551,6 +1644,7 @@ if (!noTui && !teamsMode && (freshMode || (projectSettings.MultiModel == null &&
                 AIProvider.Cursor => cursorModel ?? "claude-sonnet",
                 AIProvider.OpenCode => openCodeModel ?? "",
                 AIProvider.Ollama => ollamaModel ?? "llama3.1:8b",
+                AIProvider.CopilotSdk => copilotSdkModel ?? "gpt-5",
                 _ => ""
             };
 
@@ -1979,6 +2073,7 @@ var providerConfig = provider switch
     AIProvider.Cursor => AIProviderConfig.ForCursor(model: cursorModel),
     AIProvider.OpenCode => AIProviderConfig.ForOpenCode(model: openCodeModel),
     AIProvider.Ollama => AIProviderConfig.ForOllama(baseUrl: ollamaUrl, model: ollamaModel),
+    AIProvider.CopilotSdk => AIProviderConfig.ForCopilotSdk(model: copilotSdkModel),
     _ => AIProviderConfig.ForClaude()
 };
 
@@ -2214,6 +2309,54 @@ if (noTui)
 
         Console.WriteLine("[Press Ctrl+C to stop]\n");
         Console.WriteLine("=== Starting Ollama session ===\n");
+
+        try
+        {
+            var result = await client.RunAsync(prompt, CancellationToken.None);
+            Console.WriteLine($"\n=== Session complete: {(result.Success ? "SUCCESS" : "FAILED")} ===");
+            if (!result.Success && !string.IsNullOrEmpty(result.Error))
+            {
+                Console.Error.WriteLine($"Error: {result.Error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"\n[ERROR] {ex.Message}");
+        }
+
+        Console.WriteLine("\n[Goodbye!]");
+        return 0;
+    }
+
+    // For CopilotSdk provider, use CopilotSdkClient directly for proper streaming
+    if (provider == AIProvider.CopilotSdk)
+    {
+        var promptPath = config.PromptFilePath;
+        if (!File.Exists(promptPath))
+        {
+            Console.Error.WriteLine($"[ERROR] prompt.md not found at {promptPath}");
+            return 1;
+        }
+
+        var prompt = await File.ReadAllTextAsync(promptPath);
+        var sdkModel = copilotSdkModel ?? "gpt-5";
+        var client = new CopilotSdkClient(targetDir, sdkModel);
+
+        client.OnOutput += text => Console.Write(text);
+        client.OnToolCall += (name, args) => Console.WriteLine($"\n[Tool: {name}]");
+        client.OnToolResult += (name, result) => Console.WriteLine($"[Result: {name} completed]\n");
+        client.OnError += err => Console.Error.WriteLine($"\n[ERROR] {err}");
+        client.OnIterationComplete += iter => Console.WriteLine($"\n=== Iteration {iter} complete ===\n");
+
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            Console.WriteLine("\n[Stopping...]");
+            client.Stop();
+        };
+
+        Console.WriteLine("[Press Ctrl+C to stop]\n");
+        Console.WriteLine("=== Starting Copilot SDK session ===\n");
 
         try
         {

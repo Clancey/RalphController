@@ -24,7 +24,10 @@ public enum AIProvider
     OpenCode,
 
     /// <summary>Direct Ollama API integration</summary>
-    Ollama
+    Ollama,
+
+    /// <summary>GitHub Copilot SDK (.NET) integration</summary>
+    CopilotSdk
 }
 
 /// <summary>
@@ -144,6 +147,15 @@ public record AIProviderConfig
         Provider = AIProvider.Ollama,
         ExecutablePath = baseUrl ?? "http://localhost:11434",  // Use ExecutablePath to store base URL
         Arguments = model ?? "llama3.1:8b",  // Use Arguments to store model name
+        UsesStdin = false,
+        UsesPromptArgument = false
+    };
+
+    public static AIProviderConfig ForCopilotSdk(string? model = null, string? githubToken = null) => new()
+    {
+        Provider = AIProvider.CopilotSdk,
+        ExecutablePath = githubToken ?? "",  // Use ExecutablePath to store GitHub token (empty = use env/default)
+        Arguments = model ?? "gpt-5",  // Use Arguments to store model name
         UsesStdin = false,
         UsesPromptArgument = false
     };

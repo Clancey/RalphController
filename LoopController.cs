@@ -506,9 +506,9 @@ public class LoopController : IDisposable
                     _ollamaClient = null;
                 }
             }
-            else if (currentProvider == AIProvider.CopilotSdk)
+            else if (currentProvider == AIProvider.Copilot)
             {
-                // For CopilotSdk, use CopilotSdkClient with streaming support
+                // For Copilot, use CopilotSdkClient with streaming support
                 var model = currentProviderConfig.Arguments ?? "gpt-5";
                 var token = string.IsNullOrEmpty(currentProviderConfig.ExecutablePath) ? null : currentProviderConfig.ExecutablePath;
 

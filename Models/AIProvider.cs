@@ -11,7 +11,7 @@ public enum AIProvider
     /// <summary>OpenAI Codex CLI</summary>
     Codex,
 
-    /// <summary>GitHub Copilot CLI</summary>
+    /// <summary>GitHub Copilot SDK (.NET) integration</summary>
     Copilot,
 
     /// <summary>Google Gemini CLI</summary>
@@ -24,10 +24,7 @@ public enum AIProvider
     OpenCode,
 
     /// <summary>Direct Ollama API integration</summary>
-    Ollama,
-
-    /// <summary>GitHub Copilot SDK (.NET) integration</summary>
-    CopilotSdk
+    Ollama
 }
 
 /// <summary>
@@ -92,18 +89,6 @@ public record AIProviderConfig
         UsesStdin = true  // Codex exec reads from stdin when using "-"
     };
 
-    public static AIProviderConfig ForCopilot(string? executablePath = null, string? model = null) => new()
-    {
-        Provider = AIProvider.Copilot,
-        ExecutablePath = executablePath ?? "copilot",
-        // -p for programmatic mode (non-interactive)
-        // --allow-all-tools for autonomous execution without approval prompts
-        // --model to specify which model (default: gpt-5)
-        Arguments = $"--allow-all-tools --model {model ?? "gpt-5"} -p",
-        UsesStdin = false,
-        UsesPromptArgument = true  // Prompt is passed as quoted argument after -p
-    };
-
     public static AIProviderConfig ForOpenCode(string? executablePath = null, string? model = null) => new()
     {
         Provider = AIProvider.OpenCode,
@@ -151,9 +136,9 @@ public record AIProviderConfig
         UsesPromptArgument = false
     };
 
-    public static AIProviderConfig ForCopilotSdk(string? model = null, string? githubToken = null) => new()
+    public static AIProviderConfig ForCopilot(string? model = null, string? githubToken = null) => new()
     {
-        Provider = AIProvider.CopilotSdk,
+        Provider = AIProvider.Copilot,
         ExecutablePath = githubToken ?? "",  // Use ExecutablePath to store GitHub token (empty = use env/default)
         Arguments = model ?? "gpt-5",  // Use Arguments to store model name
         UsesStdin = false,

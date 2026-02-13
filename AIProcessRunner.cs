@@ -25,7 +25,7 @@ public static class AIProcessRunner
         CancellationToken cancellationToken = default)
     {
         // CopilotSdk uses an in-process SDK, not a CLI process
-        if (providerConfig.Provider == AIProvider.CopilotSdk)
+        if (providerConfig.Provider == AIProvider.Copilot)
         {
             return await RunCopilotSdkAsync(providerConfig, prompt, workingDir, onOutput, cancellationToken);
         }

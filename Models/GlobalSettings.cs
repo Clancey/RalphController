@@ -24,9 +24,6 @@ public class GlobalSettings
     /// <summary>Last used OpenCode model</summary>
     public string? LastOpenCodeModel { get; set; }
 
-    /// <summary>Last used Copilot model</summary>
-    public string? LastCopilotModel { get; set; }
-
     /// <summary>When these settings were last updated</summary>
     public DateTime? LastUpdated { get; set; }
 

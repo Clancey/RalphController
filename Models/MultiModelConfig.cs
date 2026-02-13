@@ -63,12 +63,11 @@ public class ModelSpec
         {
             AIProvider.Claude => CreateClaudeConfig(),
             AIProvider.Codex => AIProviderConfig.ForCodex(ExecutablePath),
-            AIProvider.Copilot => AIProviderConfig.ForCopilot(ExecutablePath, Model),
+            AIProvider.Copilot => AIProviderConfig.ForCopilot(Model),
             AIProvider.Gemini => AIProviderConfig.ForGemini(ExecutablePath, Model),
             AIProvider.Cursor => AIProviderConfig.ForCursor(ExecutablePath, Model),
             AIProvider.OpenCode => AIProviderConfig.ForOpenCode(ExecutablePath, NormalizeOpenCodeModel(Model)),
             AIProvider.Ollama => AIProviderConfig.ForOllama(BaseUrl, Model),
-            AIProvider.CopilotSdk => AIProviderConfig.ForCopilotSdk(Model),
             _ => throw new ArgumentOutOfRangeException(nameof(Provider), $"Unknown provider: {Provider}")
         };
     }
@@ -129,12 +128,11 @@ public class ModelSpec
         {
             "claude" => AIProvider.Claude,
             "codex" => AIProvider.Codex,
-            "copilot" => AIProvider.Copilot,
+            "copilot" or "copilotsdk" or "copilot-sdk" => AIProvider.Copilot,
             "gemini" => AIProvider.Gemini,
             "cursor" => AIProvider.Cursor,
             "opencode" => AIProvider.OpenCode,
             "ollama" => AIProvider.Ollama,
-            "copilotsdk" or "copilot-sdk" => AIProvider.CopilotSdk,
             _ => throw new ArgumentException($"Unknown provider: {providerStr}")
         };
 

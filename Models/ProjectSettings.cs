@@ -20,7 +20,7 @@ public class ProjectSettings
     /// <summary>Model to use for Codex (e.g., codex-1, o3)</summary>
     public string? CodexModel { get; set; }
 
-    /// <summary>Model to use for Copilot (e.g., gpt-5, claude-sonnet-4)</summary>
+    /// <summary>Model to use for Copilot (e.g., gpt-5, claude-sonnet-4.5)</summary>
     public string? CopilotModel { get; set; }
 
     /// <summary>Model to use for Gemini (e.g., gemini-2.5-pro, gemini-2.5-flash)</summary>
@@ -31,9 +31,6 @@ public class ProjectSettings
 
     /// <summary>Model to use for OpenCode (e.g., anthropic/claude-3-5-sonnet)</summary>
     public string? OpenCodeModel { get; set; }
-
-    /// <summary>Model to use for Copilot SDK (e.g., gpt-5, claude-sonnet-4.5)</summary>
-    public string? CopilotSdkModel { get; set; }
 
     /// <summary>Base URL for Ollama/LMStudio API (e.g., http://127.0.0.1:11434)</summary>
     public string? OllamaUrl { get; set; }

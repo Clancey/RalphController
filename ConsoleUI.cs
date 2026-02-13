@@ -647,8 +647,7 @@ public class ConsoleUI : IDisposable
             "Gemini",
             "Cursor",
             "OpenCode",
-            "Ollama",
-            "CopilotSdk"
+            "Ollama"
         };
     }
 
@@ -666,21 +665,6 @@ public class ConsoleUI : IDisposable
                 _injectOptions.AddRange(new[] { "o3", "o1", "gpt-5.2-codex", "gpt-5.1-codex", "Enter custom..." });
                 break;
             case "Copilot":
-                _injectOptions.AddRange(new[] { "gpt-5", "gpt-5-mini", "gpt-5.1", "claude-sonnet-4", "Enter custom..." });
-                break;
-            case "Gemini":
-                _injectOptions.AddRange(new[] { "gemini-2.5-pro", "gemini-2.0-flash", "Enter custom..." });
-                break;
-            case "Cursor":
-                _injectOptions.AddRange(new[] { "claude-sonnet", "claude-opus", "gpt-4o", "Enter custom..." });
-                break;
-            case "OpenCode":
-                _injectOptions.AddRange(new[] { "ollama/llama3.1:70b", "ollama/deepseek-r1:32b", "ollama/qwen2.5:72b", "Enter custom..." });
-                break;
-            case "Ollama":
-                _injectOptions.AddRange(new[] { "llama3.1:8b", "llama3.1:70b", "deepseek-r1:32b", "qwen2.5:72b", "Enter custom..." });
-                break;
-            case "CopilotSdk":
                 try
                 {
                     await using var sdkClient = new GitHub.Copilot.SDK.CopilotClient();
@@ -701,6 +685,18 @@ public class ConsoleUI : IDisposable
                     _injectOptions.AddRange(new[] { "gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "claude-sonnet-4.5", "claude-opus-4.5", "claude-opus-4.6", "gemini-2.5-pro" });
                 }
                 _injectOptions.Add("Enter custom...");
+                break;
+            case "Gemini":
+                _injectOptions.AddRange(new[] { "gemini-2.5-pro", "gemini-2.0-flash", "Enter custom..." });
+                break;
+            case "Cursor":
+                _injectOptions.AddRange(new[] { "claude-sonnet", "claude-opus", "gpt-4o", "Enter custom..." });
+                break;
+            case "OpenCode":
+                _injectOptions.AddRange(new[] { "ollama/llama3.1:70b", "ollama/deepseek-r1:32b", "ollama/qwen2.5:72b", "Enter custom..." });
+                break;
+            case "Ollama":
+                _injectOptions.AddRange(new[] { "llama3.1:8b", "llama3.1:70b", "deepseek-r1:32b", "qwen2.5:72b", "Enter custom..." });
                 break;
         }
     }

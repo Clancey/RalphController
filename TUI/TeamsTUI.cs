@@ -40,6 +40,7 @@ public sealed class TeamsTUI : IDisposable
 
     // --- Timing ---
     private readonly DateTime _startTime = DateTime.UtcNow;
+    private TimeSpan _accumulatedAITime; // AI time from destroyed agents
 
     // --- Render throttle ---
     private DateTime _lastRender = DateTime.MinValue;
@@ -196,6 +197,9 @@ public sealed class TeamsTUI : IDisposable
             // Remove immediately to prevent accumulation (new agents reuse the slot)
             lock (_viewLock)
             {
+                // Preserve AI time from the destroyed agent before removing stats
+                if (_agentStats.TryGetValue(taskAgent.AgentId, out var stats))
+                    _accumulatedAITime += stats.AITime;
                 _sortedAgentIds.Remove(taskAgent.AgentId);
                 _agentStats.Remove(taskAgent.AgentId);
                 // Clamp selection index
@@ -672,11 +676,18 @@ public sealed class TeamsTUI : IDisposable
 
         int agentCount;
         TaskStoreStatistics stats;
+        TimeSpan totalAITime;
         lock (_viewLock)
         {
             agentCount = _sortedAgentIds.Count;
             stats = _taskStats;
+            // Sum AI time from destroyed agents + all live agents
+            totalAITime = _accumulatedAITime;
+            foreach (var agentStats in _agentStats.Values)
+                totalAITime += agentStats.AITime;
         }
+
+        var aiTimeStr = $"{totalAITime.Hours:D2}:{totalAITime.Minutes:D2}:{totalAITime.Seconds:D2}";
 
         var stateStr = FormatOrchestratorState(_orchestrator.State);
         var viewHint = _currentView switch
@@ -693,6 +704,7 @@ public sealed class TeamsTUI : IDisposable
             $"Agents: [cyan]{agentCount}[/]  " +
             $"Tasks: [green]{stats.Completed}[/]/{stats.Total}  " +
             $"Elapsed: [dim]{elapsedStr}[/]  " +
+            $"AI Time: [dim]{aiTimeStr}[/]  " +
             $"[dim]{viewHint}[/]";
 
         return new Markup(barText);

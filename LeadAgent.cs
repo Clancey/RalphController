@@ -304,6 +304,11 @@ public class LeadAgent : IDisposable
             // Merge worktree branch back (serialize merges to avoid conflicts)
             OnOutput?.Invoke($"[{taskAgent.AgentId}] Merging branch {taskAgent.BranchName}...");
 
+            // Show both lead and task agent as merging in TUI
+            SetState(AgentState.MergingWork);
+            taskAgent.Statistics.State = AgentState.MergingWork;
+            OnUpdate?.Invoke(taskAgent.Statistics);
+
             await _mergeLock.WaitAsync(ct);
             try
             {
@@ -335,6 +340,8 @@ public class LeadAgent : IDisposable
                         task.Description,
                         ct);
 
+                    Statistics.AITime += fixAgent.LastDuration;
+
                     if (resolved)
                     {
                         // Commit the resolution and mark success
@@ -362,6 +369,7 @@ public class LeadAgent : IDisposable
             finally
             {
                 _mergeLock.Release();
+                SetState(AgentState.Idle);
             }
         }
         else
@@ -410,6 +418,7 @@ public class LeadAgent : IDisposable
         }
 
         Statistics.OutputChars += result.OutputChars;
+        Statistics.AITime += result.Duration;
         Statistics.Iterations++;
         Statistics.LastActivityAt = DateTime.UtcNow;
         OnUpdate?.Invoke(Statistics);
@@ -591,6 +600,23 @@ public class LeadAgent : IDisposable
         if (string.IsNullOrEmpty(targetBranch))
         {
             targetBranch = await _gitManager.GetCurrentBranchAsync(ct);
+        }
+
+        // Rebase the worktree branch onto the latest target before merging.
+        // This brings in any work already merged by other agents, reducing conflicts.
+        if (_teamConfig.UseWorktrees)
+        {
+            OnOutput?.Invoke($"[{taskAgent.AgentId}] Rebasing {taskAgent.BranchName} onto {targetBranch}...");
+            var rebaseResult = await _gitManager.RunGitCommandAsync(
+                taskAgent.WorktreePath,
+                $"rebase {targetBranch}",
+                ct);
+
+            if (rebaseResult.ExitCode != 0)
+            {
+                OnOutput?.Invoke($"[{taskAgent.AgentId}] Rebase failed, aborting rebase and proceeding to merge...");
+                await _gitManager.RunGitCommandAsync(taskAgent.WorktreePath, "rebase --abort", ct);
+            }
         }
 
         var task = taskAgent.Task;

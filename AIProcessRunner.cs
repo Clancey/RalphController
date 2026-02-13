@@ -26,6 +26,7 @@ public static class AIProcessRunner
     {
         string? tempPromptFile = null;
         string? tempScriptFile = null;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         try
         {
@@ -85,7 +86,7 @@ public static class AIProcessRunner
             using var process = Process.Start(psi);
             if (process == null)
             {
-                return new AgentProcessResult { Success = false, Error = "Failed to start AI process" };
+                return new AgentProcessResult { Success = false, Error = "Failed to start AI process", Duration = stopwatch.Elapsed };
             }
 
             // Write prompt to stdin if applicable
@@ -169,12 +170,13 @@ public static class AIProcessRunner
                 ParsedText = parsedText,
                 Error = error ?? "",
                 OutputChars = outputChars,
-                ErrorChars = error?.Length ?? 0
+                ErrorChars = error?.Length ?? 0,
+                Duration = stopwatch.Elapsed
             };
         }
         catch (Exception ex)
         {
-            return new AgentProcessResult { Success = false, Error = ex.Message };
+            return new AgentProcessResult { Success = false, Error = ex.Message, Duration = stopwatch.Elapsed };
         }
         finally
         {
@@ -364,4 +366,5 @@ public class AgentProcessResult
     public List<string>? FilesModified { get; set; }
     public long OutputChars { get; set; }
     public long ErrorChars { get; set; }
+    public TimeSpan Duration { get; set; }
 }

@@ -18,6 +18,9 @@ public class MergeFixAgent
     public event Action<string>? OnOutput;
     public event Action<string>? OnError;
 
+    /// <summary>Duration of the last AI process call (for AI time tracking)</summary>
+    public TimeSpan LastDuration { get; private set; }
+
     public MergeFixAgent(RalphConfig config, TeamConfig teamConfig)
     {
         _config = config;
@@ -52,6 +55,8 @@ public class MergeFixAgent
                     OnOutput?.Invoke($"[merge-fix] {output}");
                 },
                 ct);
+
+            LastDuration = result.Duration;
 
             if (result.Success)
             {

@@ -289,6 +289,7 @@ public class TaskAgent : IDisposable
 
         Statistics.OutputChars += result.OutputChars;
         Statistics.ErrorChars += result.ErrorChars;
+        Statistics.AITime += result.Duration;
         Statistics.Iterations++;
         Statistics.LastActivityAt = DateTime.UtcNow;
 

@@ -854,6 +854,7 @@ public class TeamAgent : IDisposable
 
         Statistics.OutputChars += result.OutputChars;
         Statistics.ErrorChars += result.ErrorChars;
+        Statistics.AITime += result.Duration;
 
         // Get modified files
         if (result.Success && _teamConfig.UseWorktrees)

@@ -121,6 +121,9 @@ public class AgentStatistics
     /// <summary>Conflicts detected</summary>
     public int ConflictsDetected { get; set; }
 
+    /// <summary>Cumulative time spent in AI process calls</summary>
+    public TimeSpan AITime { get; set; }
+
     /// <summary>Total output characters generated</summary>
     public long OutputChars { get; set; }
 

@@ -166,6 +166,32 @@ public static class PlanUpdater
     }
 
     /// <summary>
+    /// Append audit findings to the implementation plan as a new section.
+    /// Each finding becomes a checkbox item so subsequent decomposition can pick them up.
+    /// </summary>
+    public static void AppendAuditFindings(
+        string planPath,
+        List<Models.AuditFinding> findings,
+        int auditRound,
+        Action<string>? onOutput = null)
+    {
+        if (findings.Count == 0) return;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine($"## Audit Findings (Round {auditRound})");
+        sb.AppendLine();
+        foreach (var finding in findings)
+        {
+            var severity = !string.IsNullOrEmpty(finding.Severity) ? $"[{finding.Severity}] " : "";
+            sb.AppendLine($"- [ ] {severity}{finding.Title}: {finding.Description}");
+        }
+
+        File.AppendAllText(planPath, sb.ToString());
+        onOutput?.Invoke($"Appended {findings.Count} audit findings (round {auditRound}) to {planPath}");
+    }
+
+    /// <summary>
     /// Extract the description portion of a SourceLine (after the checkbox marker)
     /// and return it as a regex pattern with a capture group.
     /// </summary>

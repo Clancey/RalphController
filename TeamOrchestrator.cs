@@ -5,6 +5,7 @@ using RalphController.Git;
 using RalphController.Messaging;
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace RalphController;
 
@@ -216,6 +217,83 @@ public class TeamOrchestrator : IDisposable
         {
             _leadAgent = null;
             leadAgent.Dispose();
+        }
+
+        // Audit phase: spawn audit agents, collect findings, loop if issues found
+        const int MaxAuditRounds = 3;
+        for (int auditRound = 1; auditRound <= MaxAuditRounds; auditRound++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            SetState(TeamOrchestratorState.Auditing);
+            OnOutput?.Invoke($"Starting audit phase (round {auditRound}/{MaxAuditRounds})...");
+
+            var findings = await RunAuditPhaseAsync(auditRound, cancellationToken);
+
+            if (findings.Count == 0)
+            {
+                OnOutput?.Invoke("Audit clean — no issues found.");
+                break;
+            }
+
+            OnOutput?.Invoke($"Audit found {findings.Count} issue(s). Creating remediation tasks...");
+
+            // Append findings to implementation plan
+            PlanUpdater.AppendAuditFindings(
+                _config.PlanFilePath, findings, auditRound, msg => OnOutput?.Invoke(msg));
+
+            // Create new tasks from findings
+            var existingCount = _taskStore.GetAll().Count;
+            var newTasks = findings.Select((f, i) => new AgentTask
+            {
+                TaskId = $"audit-{auditRound}-{i + 1}",
+                Title = f.Title,
+                Description = f.Description,
+                Priority = f.Severity?.ToLower() == "critical" ? TaskPriority.Critical
+                         : f.Severity?.ToLower() == "high" ? TaskPriority.High
+                         : TaskPriority.Normal
+            }).ToList();
+            _taskStore.AddTasks(newTasks);
+            OnQueueUpdate?.Invoke(_taskStore.GetStatistics());
+
+            // Re-run lead agent for the new tasks
+            OnOutput?.Invoke($"Re-running lead agent for {newTasks.Count} remediation task(s)...");
+            SetState(TeamOrchestratorState.Coordinating);
+
+            var remediationLead = new LeadAgent(
+                _config, _teamConfig, _taskStore, _gitManager, _mergeManager, _leadBus);
+            remediationLead.OnOutput += output => OnOutput?.Invoke(output);
+            remediationLead.OnError += error => OnError?.Invoke(error);
+            remediationLead.OnUpdate += stats => OnAgentUpdate?.Invoke(stats);
+            remediationLead.OnQueueUpdate += stats => OnQueueUpdate?.Invoke(stats);
+            remediationLead.OnTaskAgentCreated += taskAgent =>
+            {
+                OnTaskAgentCreated?.Invoke(taskAgent);
+                taskAgent.OnUpdate += agentStats => OnAgentUpdate?.Invoke(agentStats);
+            };
+            remediationLead.OnTaskAgentDestroyed += taskAgent => OnTaskAgentDestroyed?.Invoke(taskAgent);
+            OnAgentUpdate?.Invoke(remediationLead.Statistics);
+
+            _leadAgent = remediationLead;
+            try
+            {
+                await remediationLead.RunAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                OnError?.Invoke($"Remediation lead crashed: {ex.Message}");
+            }
+            finally
+            {
+                _leadAgent = null;
+                remediationLead.Dispose();
+            }
+
+            if (auditRound == MaxAuditRounds)
+            {
+                OnError?.Invoke($"Reached max audit rounds ({MaxAuditRounds}). Proceeding despite unresolved findings.");
+            }
         }
 
         // Synthesize results
@@ -619,6 +697,178 @@ public class TeamOrchestrator : IDisposable
         }
     }
 
+    /// <summary>
+    /// Spawn up to AgentCount audit TaskAgents. Each runs a Code-only phase with an audit prompt.
+    /// Parses output for ISSUE: lines. Returns discovered findings.
+    /// </summary>
+    private async Task<List<AuditFinding>> RunAuditPhaseAsync(int auditRound, CancellationToken ct)
+    {
+        var findings = new List<AuditFinding>();
+        var agentCount = Math.Max(1, _teamConfig.AgentCount);
+
+        // Build audit tasks — one per agent
+        var auditTasks = new List<AgentTask>();
+        for (int i = 0; i < agentCount; i++)
+        {
+            auditTasks.Add(new AgentTask
+            {
+                TaskId = $"audit-check-{auditRound}-{i + 1}",
+                Title = $"Audit agent {i + 1} (round {auditRound})",
+                Description = BuildAuditPromptDescription(i, agentCount, auditRound)
+            });
+        }
+
+        // Clean up stale worktrees before audit
+        if (_teamConfig.UseWorktrees)
+        {
+            var worktreeBaseDir = Path.Combine(_config.TargetDirectory, ".ralph-worktrees");
+            await _gitManager.CleanupStaleWorktreesAsync(worktreeBaseDir, ct);
+        }
+
+        // Launch audit agents in parallel
+        var agentResults = new ConcurrentBag<(int Index, TaskAgentResult Result)>();
+        var tasks = new List<Task>();
+
+        for (int i = 0; i < auditTasks.Count; i++)
+        {
+            var index = i;
+            var auditTask = auditTasks[i];
+            var model = _teamConfig.GetAgentModel(index);
+
+            tasks.Add(Task.Run(async () =>
+            {
+                var taskAgent = new TaskAgent(
+                    _config,
+                    // Override SubAgentPhases to Code-only for audit
+                    _teamConfig with { SubAgentPhases = new List<SubAgentPhase> { SubAgentPhase.Code } },
+                    auditTask,
+                    _gitManager,
+                    model);
+
+                taskAgent.OnOutput += output => OnOutput?.Invoke($"[audit-{index + 1}] {output}");
+                taskAgent.OnError += error => OnError?.Invoke($"[audit-{index + 1}] {error}");
+                taskAgent.OnUpdate += stats => OnAgentUpdate?.Invoke(stats);
+                OnTaskAgentCreated?.Invoke(taskAgent);
+
+                try
+                {
+                    var initialized = await taskAgent.InitializeAsync(ct);
+                    if (!initialized)
+                    {
+                        OnError?.Invoke($"Audit agent {index + 1} failed to initialize");
+                        agentResults.Add((index, new TaskAgentResult
+                        {
+                            Success = false,
+                            Summary = "Init failed",
+                            BranchName = taskAgent.BranchName
+                        }));
+                        return;
+                    }
+
+                    var result = await taskAgent.RunAsync(ct);
+                    agentResults.Add((index, result));
+
+                    // Cleanup worktree (audit agents are read-only, no merge needed)
+                    await taskAgent.CleanupAsync();
+                }
+                finally
+                {
+                    OnTaskAgentDestroyed?.Invoke(taskAgent);
+                    taskAgent.Dispose();
+                }
+            }, ct));
+        }
+
+        await Task.WhenAll(tasks);
+
+        // Parse findings from audit agent output
+        foreach (var (index, result) in agentResults.OrderBy(r => r.Index))
+        {
+            if (!result.Success)
+            {
+                OnOutput?.Invoke($"Audit agent {index + 1} failed: {result.Summary}");
+                continue;
+            }
+
+            var output = result.Code?.Output ?? result.Summary ?? "";
+
+            // Check for clean audit
+            if (output.Contains("AUDIT_CLEAN"))
+            {
+                OnOutput?.Invoke($"Audit agent {index + 1}: clean");
+                continue;
+            }
+
+            // Parse ISSUE: lines
+            var issueMatches = Regex.Matches(output, @"ISSUE:\s*(.+?)(?:\s*\|\s*(.+))?$", RegexOptions.Multiline);
+            foreach (Match match in issueMatches)
+            {
+                var title = match.Groups[1].Value.Trim();
+                var description = match.Groups[2].Success ? match.Groups[2].Value.Trim() : title;
+
+                // Extract severity if present at start of title like [CRITICAL] or [HIGH]
+                string? severity = null;
+                var severityMatch = Regex.Match(title, @"^\[(critical|high|medium|low)\]\s*", RegexOptions.IgnoreCase);
+                if (severityMatch.Success)
+                {
+                    severity = severityMatch.Groups[1].Value;
+                    title = title[severityMatch.Length..];
+                }
+
+                findings.Add(new AuditFinding(title, description, severity));
+            }
+
+            if (issueMatches.Count == 0)
+            {
+                // If agent output doesn't contain ISSUE: or AUDIT_CLEAN, treat as potential issue
+                OnOutput?.Invoke($"Audit agent {index + 1}: no structured findings, checking for errors...");
+            }
+        }
+
+        return findings;
+    }
+
+    /// <summary>
+    /// Build the audit prompt description for an individual audit agent.
+    /// </summary>
+    private string BuildAuditPromptDescription(int agentIndex, int totalAgents, int auditRound)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("You are an AUDIT agent — your job is to review the project after all implementation is complete.");
+        sb.AppendLine("DO NOT implement new features. Only review and report issues.");
+        sb.AppendLine();
+        sb.AppendLine($"This is audit round {auditRound}. You are agent {agentIndex + 1} of {totalAgents}.");
+        sb.AppendLine();
+
+        sb.AppendLine("INSTRUCTIONS:");
+        if (!string.IsNullOrEmpty(_teamConfig.VerifyCommand))
+        {
+            sb.AppendLine($"1. Run the verification command: {_teamConfig.VerifyCommand}");
+        }
+        else
+        {
+            sb.AppendLine("1. Build the project and run any available tests");
+        }
+        sb.AppendLine("2. Check for compilation errors and test failures");
+        sb.AppendLine("3. Review recent git changes for correctness (use git log and git diff)");
+        sb.AppendLine("4. Look for missing implementations, TODOs, or incomplete features");
+        sb.AppendLine("5. Check for common issues: null references, missing error handling, broken imports");
+        sb.AppendLine();
+
+        sb.AppendLine("OUTPUT FORMAT:");
+        sb.AppendLine("For each issue found, output a line in this exact format:");
+        sb.AppendLine("  ISSUE: <title> | <description>");
+        sb.AppendLine();
+        sb.AppendLine("You can optionally include severity: ISSUE: [CRITICAL] <title> | <description>");
+        sb.AppendLine();
+        sb.AppendLine("If everything looks good and all tests pass, output:");
+        sb.AppendLine("  AUDIT_CLEAN");
+        sb.AppendLine();
+        sb.AppendLine("Be thorough but concise. Only report real issues, not style preferences.");
+
+        return sb.ToString();
+    }
+
     public async Task MergeAndCleanupAsync(CancellationToken cancellationToken)
     {
         OnOutput?.Invoke("Merging and cleaning up...");
@@ -839,6 +1089,7 @@ public enum TeamOrchestratorState
     Spawning,
     Coordinating,
     Synthesizing,
+    Auditing,
     Merging,
     Complete,
     Stopped,

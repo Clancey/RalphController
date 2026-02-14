@@ -833,6 +833,7 @@ public sealed class TeamsTUI : IDisposable
         TeamOrchestratorState.Spawning => "[blue]Spawning[/]",
         TeamOrchestratorState.Coordinating => "[green]Coordinating[/]",
         TeamOrchestratorState.Synthesizing => "[yellow]Synthesizing[/]",
+        TeamOrchestratorState.Auditing => "[magenta]Auditing[/]",
         TeamOrchestratorState.Merging => "[yellow]Merging[/]",
         TeamOrchestratorState.Complete => "[green]Complete[/]",
         TeamOrchestratorState.Stopped => "[grey]Stopped[/]",

@@ -154,9 +154,9 @@ public class LeadAgent : IDisposable
                     var stats = _taskStore.GetStatistics();
                     OnQueueUpdate?.Invoke(stats);
 
-                    // Check if we're done: no pending tasks, nothing running, no user messages
-                    if (stats.Pending == 0 && stats.InProgress == 0 && _runningAgents.IsEmpty
-                        && _pendingUserMessages.Count == 0)
+                    // Check if we're done: no pending tasks, nothing running, no failures, no user messages
+                    if (stats.Pending == 0 && stats.InProgress == 0 && stats.Failed == 0
+                        && _runningAgents.IsEmpty && _pendingUserMessages.Count == 0)
                     {
                         OnOutput?.Invoke("All tasks resolved. Declaring complete.");
                         break;
@@ -575,7 +575,7 @@ public class LeadAgent : IDisposable
         if (claimable.Count == 0)
         {
             var stats = _taskStore.GetStatistics();
-            if (stats.Pending == 0 && stats.InProgress == 0 && _runningAgents.IsEmpty)
+            if (stats.Pending == 0 && stats.InProgress == 0 && stats.Failed == 0 && _runningAgents.IsEmpty)
             {
                 return new LeadDecision
                 {
@@ -583,6 +583,13 @@ public class LeadAgent : IDisposable
                     Reason = "All tasks resolved (fallback)"
                 };
             }
+
+            // If there are failed tasks, return null so the AI decision path handles them
+            if (stats.Failed > 0 && _runningAgents.IsEmpty)
+            {
+                return null;
+            }
+
             return null; // Agents still running, wait
         }
 

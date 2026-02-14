@@ -103,6 +103,11 @@ public enum TaskStatus
 }
 
 /// <summary>
+/// An issue discovered during the audit phase
+/// </summary>
+public record AuditFinding(string Title, string Description, string? Severity = null);
+
+/// <summary>
 /// Result of a completed task
 /// </summary>
 public record TaskResult(

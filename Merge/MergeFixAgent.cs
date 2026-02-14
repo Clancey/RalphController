@@ -31,6 +31,7 @@ public class MergeFixAgent
     /// Spin up an AI coding agent to resolve merge conflicts in the given directory.
     /// The agent gets full tool access (read, edit, run build, git add, etc.).
     /// Returns true if the agent exits successfully (exit code 0).
+    /// Applies a timeout (default 15 minutes) to prevent hanging indefinitely.
     /// </summary>
     public async Task<bool> ResolveAsync(
         string workingDir,
@@ -44,6 +45,11 @@ public class MergeFixAgent
         var prompt = BuildPrompt(conflicts, mergeError, taskDescription);
         var providerConfig = GetProviderConfig();
 
+        // Apply a timeout so the merge-fix agent can't hang indefinitely.
+        // This is critical because merge operations often hold serialization locks.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(MergeFixTimeout);
+
         try
         {
             var result = await AIProcessRunner.RunAsync(
@@ -54,7 +60,7 @@ public class MergeFixAgent
                 {
                     OnOutput?.Invoke($"[merge-fix] {output}");
                 },
-                ct);
+                timeoutCts.Token);
 
             LastDuration = result.Duration;
 
@@ -69,6 +75,12 @@ public class MergeFixAgent
 
             return result.Success;
         }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Merge-fix timeout (not the outer cancellation)
+            OnError?.Invoke($"Merge-fix agent timed out after {MergeFixTimeout.TotalMinutes:F0} minutes");
+            return false;
+        }
         catch (OperationCanceledException)
         {
             throw;
@@ -79,6 +91,9 @@ public class MergeFixAgent
             return false;
         }
     }
+
+    /// <summary>Maximum time for the merge-fix agent before it is cancelled.</summary>
+    private static readonly TimeSpan MergeFixTimeout = TimeSpan.FromMinutes(15);
 
     private string BuildPrompt(
         List<GitConflict> conflicts,

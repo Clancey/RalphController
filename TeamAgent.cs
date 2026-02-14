@@ -294,9 +294,12 @@ public class TeamAgent : IDisposable
 
                 if (_teamConfig.UseWorktrees)
                 {
+                    var modelInfo = _assignedModel != null
+                        ? $" ({_assignedModel.Provider}/{_assignedModel.Model})"
+                        : "";
                     await _gitManager.CommitWorktreeAsync(
                         _worktreePath,
-                        $"[{Statistics.Name}] {task.Title ?? task.Description}",
+                        $"[{Statistics.Name}]{modelInfo} {task.Title ?? task.Description}",
                         cancellationToken);
                 }
             }
@@ -666,20 +669,25 @@ public class TeamAgent : IDisposable
 
             var commitMessage = CurrentTask?.Title ?? CurrentTask?.Description ?? _agentId;
 
+            // Collect original commit messages and model info for the squash merge body
+            var originalMessages = await _gitManager.GetBranchCommitMessagesAsync(
+                _worktreePath, targetBranch, cancellationToken);
+            var commitBody = BuildMergeCommitBody(originalMessages);
+
             MergeResult result;
             switch (_teamConfig.MergeStrategy)
             {
                 case MergeStrategy.RebaseThenMerge:
                     result = await _mergeManager.RebaseAndMergeAsync(
-                        _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage);
+                        _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage, commitBody);
                     break;
                 case MergeStrategy.MergeDirect:
                     result = await _mergeManager.MergeDirectAsync(
-                        _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage);
+                        _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage, commitBody);
                     break;
                 default:
                     result = await _mergeManager.RebaseAndMergeAsync(
-                        _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage);
+                        _worktreePath, _branchName, targetBranch, cancellationToken, commitMessage, commitBody);
                     break;
             }
 
@@ -828,6 +836,32 @@ public class TeamAgent : IDisposable
     /// </summary>
     private string? TryReadFile(string path)
         => AIProcessRunner.TryReadFile(path, _config.PromptFilePath);
+
+    /// <summary>
+    /// Build commit body for squash merge with original commits and model info.
+    /// </summary>
+    private string BuildMergeCommitBody(List<string> originalMessages)
+    {
+        var sb = new StringBuilder();
+
+        if (originalMessages.Count > 0)
+        {
+            sb.AppendLine("Original commits:");
+            foreach (var msg in originalMessages)
+            {
+                sb.AppendLine($"  - {msg}");
+            }
+            sb.AppendLine();
+        }
+
+        if (_assignedModel != null)
+        {
+            sb.AppendLine($"Model: {_assignedModel.Provider}/{_assignedModel.Model}");
+        }
+        sb.AppendLine($"Agent: {_agentId}");
+
+        return sb.ToString().TrimEnd();
+    }
 
     private AIProviderConfig GetProviderConfig()
     {

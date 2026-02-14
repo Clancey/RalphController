@@ -154,9 +154,12 @@ public class TaskAgent : IDisposable
                 // Commit after code phase
                 if (_teamConfig.UseWorktrees)
                 {
+                    var modelInfo = _assignedModel != null
+                        ? $" ({_assignedModel.Provider}/{_assignedModel.Model})"
+                        : "";
                     await _gitManager.CommitWorktreeAsync(
                         _worktreePath,
-                        $"[{_agentId}] {_task.Title ?? _task.Description}",
+                        $"[{_agentId}]{modelInfo} {_task.Title ?? _task.Description}",
                         cancellationToken);
                 }
             }

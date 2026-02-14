@@ -499,7 +499,8 @@ public class MergeManager : IDisposable
         string branchName,
         string targetBranch,
         CancellationToken cancellationToken = default,
-        string? commitMessage = null)
+        string? commitMessage = null,
+        string? commitBody = null)
     {
         var repositoryRoot = _worktrees.RepositoryRoot;
 
@@ -562,17 +563,17 @@ public class MergeManager : IDisposable
 
             // Squash doesn't auto-commit — create the commit with our message
             var msg = commitMessage ?? $"Merge {branchName}";
-            var commitResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
-                $"commit -m \"{msg.Replace("\"", "\\\"")}\"",
-                cancellationToken);
+            var fullMsg = string.IsNullOrEmpty(commitBody) ? msg : $"{msg}\n\n{commitBody}";
+            var committed = await _worktrees.CommitWithMessageFileAsync(
+                repositoryRoot, fullMsg, cancellationToken);
 
-            if (commitResult.ExitCode != 0)
+            if (!committed)
             {
                 await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
                 return new MergeResult
                 {
                     Success = false,
-                    Error = $"Squash commit failed: {commitResult.Error}"
+                    Error = "Squash commit failed"
                 };
             }
 
@@ -609,7 +610,8 @@ public class MergeManager : IDisposable
         string branchName,
         string targetBranch,
         CancellationToken cancellationToken = default,
-        string? commitMessage = null)
+        string? commitMessage = null,
+        string? commitBody = null)
     {
         var repositoryRoot = _worktrees.RepositoryRoot;
 
@@ -641,17 +643,17 @@ public class MergeManager : IDisposable
 
             // Squash doesn't auto-commit — create the commit with our message
             var msg = commitMessage ?? $"Merge {branchName}";
-            var commitResult = await _worktrees.RunGitCommandAsync(repositoryRoot,
-                $"commit -m \"{msg.Replace("\"", "\\\"")}\"",
-                cancellationToken);
+            var fullMsg = string.IsNullOrEmpty(commitBody) ? msg : $"{msg}\n\n{commitBody}";
+            var committed = await _worktrees.CommitWithMessageFileAsync(
+                repositoryRoot, fullMsg, cancellationToken);
 
-            if (commitResult.ExitCode != 0)
+            if (!committed)
             {
                 await PopStashAsync(repositoryRoot, wasStashed, cancellationToken);
                 return new MergeResult
                 {
                     Success = false,
-                    Error = $"Squash commit failed: {commitResult.Error}"
+                    Error = "Squash commit failed"
                 };
             }
 
@@ -832,13 +834,44 @@ public class MergeManager : IDisposable
 
         var commitMessage = task.Title ?? task.Description ?? task.TaskId;
 
+        // Collect original commit messages from the worktree branch for the commit body
+        var originalMessages = await _worktrees.GetBranchCommitMessagesAsync(
+            worktreePath, targetBranch, ct);
+        var commitBody = BuildCommitBody(originalMessages, agentId, task);
+
         return _teamConfig.MergeStrategy switch
         {
             MergeStrategy.MergeDirect => await MergeDirectAsync(
-                worktreePath, branchName, targetBranch, ct, commitMessage),
+                worktreePath, branchName, targetBranch, ct, commitMessage, commitBody),
             _ => await RebaseAndMergeAsync(
-                worktreePath, branchName, targetBranch, ct, commitMessage)
+                worktreePath, branchName, targetBranch, ct, commitMessage, commitBody)
         };
+    }
+
+    /// <summary>
+    /// Build a commit body with original commit messages and model info.
+    /// </summary>
+    private static string BuildCommitBody(
+        List<string> originalMessages,
+        string agentId,
+        AgentTask task)
+    {
+        var sb = new System.Text.StringBuilder();
+
+        if (originalMessages.Count > 0)
+        {
+            sb.AppendLine("Original commits:");
+            foreach (var msg in originalMessages)
+            {
+                sb.AppendLine($"  - {msg}");
+            }
+            sb.AppendLine();
+        }
+
+        sb.AppendLine($"Agent: {agentId}");
+        sb.AppendLine($"Task: {task.TaskId}");
+
+        return sb.ToString().TrimEnd();
     }
 
     /// <summary>

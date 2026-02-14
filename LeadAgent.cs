@@ -38,6 +38,10 @@ public class LeadAgent : IDisposable
     // Stale agent detection: wake up periodically to check for stuck agents
     private static readonly TimeSpan StaleCheckInterval = TimeSpan.FromSeconds(60);
 
+    // Merge timeouts: prevent merges from blocking the lead forever
+    private static readonly TimeSpan MergeTimeout = TimeSpan.FromMinutes(20);
+    private static readonly TimeSpan MergeLockTimeout = TimeSpan.FromMinutes(2);
+
     // User messaging support
     private readonly MessageBus? _messageBus;
     private readonly List<Message> _pendingUserMessages = new();
@@ -454,33 +458,54 @@ public class LeadAgent : IDisposable
             taskAgent.Statistics.State = AgentState.MergingWork;
             OnUpdate?.Invoke(taskAgent.Statistics);
 
-            await _mergeLock.WaitAsync(ct);
-            try
+            // Apply a timeout to the entire merge operation (lock acquisition + merge + AI fix).
+            // Without this, a hung git process or merge-fix agent can block all future merges.
+            using var mergeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            mergeCts.CancelAfter(MergeTimeout);
+
+            var acquired = await _mergeLock.WaitAsync(MergeLockTimeout, mergeCts.Token);
+            if (!acquired)
             {
-                var mergeResult = await MergeBranchAsync(taskAgent, ct);
-                if (mergeResult.Success)
-                {
-                    _taskStore.Complete(taskId, new TaskResult(
-                        true,
-                        result.Summary,
-                        result.AllFilesModified,
-                        result.Code?.Output ?? "",
-                        Statistics.TotalDuration));
-                    Statistics.TasksCompleted++;
-                    OnOutput?.Invoke($"Task {taskId} completed and merged successfully");
-                }
-                else
-                {
-                    // MergeBranchAsync already tried AI merge-fix in the worktree
-                    _taskStore.Fail(taskId, $"Merge failed: {mergeResult.Error}");
-                    Statistics.TasksFailed++;
-                    OnError?.Invoke($"Merge failed for {taskId}: {mergeResult.Error}");
-                }
-            }
-            finally
-            {
-                _mergeLock.Release();
+                OnError?.Invoke($"Merge lock timeout for {taskId} — another merge may be stuck");
+                _taskStore.Fail(taskId, "Merge lock timeout");
+                Statistics.TasksFailed++;
                 SetState(AgentState.Idle);
+            }
+            else
+            {
+                try
+                {
+                    var mergeResult = await MergeBranchAsync(taskAgent, mergeCts.Token);
+                    if (mergeResult.Success)
+                    {
+                        _taskStore.Complete(taskId, new TaskResult(
+                            true,
+                            result.Summary,
+                            result.AllFilesModified,
+                            result.Code?.Output ?? "",
+                            Statistics.TotalDuration));
+                        Statistics.TasksCompleted++;
+                        OnOutput?.Invoke($"Task {taskId} completed and merged successfully");
+                    }
+                    else
+                    {
+                        // MergeBranchAsync already tried AI merge-fix in the worktree
+                        _taskStore.Fail(taskId, $"Merge failed: {mergeResult.Error}");
+                        Statistics.TasksFailed++;
+                        OnError?.Invoke($"Merge failed for {taskId}: {mergeResult.Error}");
+                    }
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    OnError?.Invoke($"Merge timed out for {taskId} after {MergeTimeout.TotalMinutes:F0} minutes");
+                    _taskStore.Fail(taskId, $"Merge timed out after {MergeTimeout.TotalMinutes:F0} minutes");
+                    Statistics.TasksFailed++;
+                }
+                finally
+                {
+                    _mergeLock.Release();
+                    SetState(AgentState.Idle);
+                }
             }
         }
         else
@@ -801,8 +826,16 @@ public class LeadAgent : IDisposable
         // The worktree branch is now up to date with the target (via rebase or merge above),
         // so this squash merge should apply cleanly.
         var commitMessage = taskAgent.Task.Title ?? taskAgent.Task.Description;
+
+        // Collect original commit messages from the worktree branch
+        var originalMessages = await _gitManager.GetBranchCommitMessagesAsync(
+            taskAgent.WorktreePath, targetBranch, ct);
+
+        // Build commit body with original messages and model info
+        var commitBody = BuildMergeCommitBody(taskAgent, originalMessages);
+
         return await _mergeManager.MergeDirectAsync(
-            taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage);
+            taskAgent.WorktreePath, taskAgent.BranchName, targetBranch, ct, commitMessage, commitBody);
     }
 
     // --- Prompt building ---
@@ -1003,6 +1036,42 @@ public class LeadAgent : IDisposable
         {
             OnOutput?.Invoke($"[{taskAgent.AgentId}] Phase: {phase}");
         };
+    }
+
+    /// <summary>
+    /// Build commit body for squash merge, including original commits and model info.
+    /// </summary>
+    private string BuildMergeCommitBody(TaskAgent taskAgent, List<string> originalMessages)
+    {
+        var sb = new StringBuilder();
+
+        if (originalMessages.Count > 0)
+        {
+            sb.AppendLine("Original commits:");
+            foreach (var msg in originalMessages)
+            {
+                sb.AppendLine($"  - {msg}");
+            }
+            sb.AppendLine();
+        }
+
+        // Model and role info
+        var agentModel = taskAgent.Statistics.AssignedModel;
+        if (agentModel != null)
+        {
+            sb.AppendLine($"Agent model: {agentModel.Provider}/{agentModel.Model} (role: task-agent)");
+        }
+
+        var leadModel = _leadModel;
+        if (leadModel != null)
+        {
+            sb.AppendLine($"Lead model: {leadModel.Provider}/{leadModel.Model} (role: lead)");
+        }
+
+        sb.AppendLine($"Agent: {taskAgent.AgentId}");
+        sb.AppendLine($"Task: {taskAgent.Task.TaskId}");
+
+        return sb.ToString().TrimEnd();
     }
 
     private static string Truncate(string value, int maxLength)

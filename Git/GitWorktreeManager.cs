@@ -176,6 +176,56 @@ public class GitWorktreeManager : IDisposable
     }
 
     /// <summary>
+    /// Get the commit log for a branch relative to a base branch.
+    /// Returns individual commit messages for inclusion in squash merge commits.
+    /// </summary>
+    public async Task<List<string>> GetBranchCommitMessagesAsync(
+        string worktreePath,
+        string baseBranch,
+        CancellationToken cancellationToken = default)
+    {
+        // Get commits on the branch that aren't on the base branch
+        var result = await RunGitCommandAsync(worktreePath,
+            $"log {baseBranch}..HEAD --format=%s --reverse",
+            cancellationToken);
+
+        if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.Output))
+            return new List<string>();
+
+        return result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(m => m.Trim())
+            .Where(m => !string.IsNullOrEmpty(m))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Commit changes using a temp file for the message (supports multi-line).
+    /// </summary>
+    public async Task<bool> CommitWithMessageFileAsync(
+        string directory,
+        string message,
+        CancellationToken cancellationToken = default)
+    {
+        string? tempFile = null;
+        try
+        {
+            tempFile = Path.GetTempFileName();
+            await File.WriteAllTextAsync(tempFile, message, cancellationToken);
+
+            var result = await RunGitCommandAsync(directory,
+                $"commit -F \"{tempFile}\"",
+                cancellationToken);
+
+            return result.ExitCode == 0;
+        }
+        finally
+        {
+            if (tempFile != null && File.Exists(tempFile))
+                try { File.Delete(tempFile); } catch { }
+        }
+    }
+
+    /// <summary>
     /// Remove a worktree
     /// </summary>
     public async Task<bool> RemoveWorktreeAsync(

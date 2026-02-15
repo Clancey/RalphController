@@ -147,21 +147,28 @@ public class MergeFixAgent
         }
 
         sb.AppendLine("--- INSTRUCTIONS ---");
-        sb.AppendLine("1. Read the conflicted files and understand both sides of each conflict");
-        sb.AppendLine("2. Resolve each conflict by editing the files to merge both changes correctly");
-        sb.AppendLine("3. Remove ALL conflict markers (<<<<<<, ======, >>>>>>)");
-        sb.AppendLine("4. Run `git add` on each resolved file");
+        sb.AppendLine("IMPORTANT: If you have uncommitted local changes that interfere with the merge,");
+        sb.AppendLine("you can use `git stash` to save them, perform the merge resolution, and then");
+        sb.AppendLine("`git stash pop` to restore them when done. This is useful when the working tree");
+        sb.AppendLine("has modifications that conflict with the incoming merge.");
+        sb.AppendLine();
+        sb.AppendLine("1. If needed, run `git stash` to save any uncommitted changes");
+        sb.AppendLine("2. Read the conflicted files and understand both sides of each conflict");
+        sb.AppendLine("3. Resolve each conflict by editing the files to merge both changes correctly");
+        sb.AppendLine("4. Remove ALL conflict markers (<<<<<<, ======, >>>>>>)");
+        sb.AppendLine("5. Run `git add` on each resolved file");
 
         if (!string.IsNullOrEmpty(_teamConfig.VerifyCommand))
         {
-            sb.AppendLine($"5. Run the build/test command to verify: {_teamConfig.VerifyCommand}");
-            sb.AppendLine("6. If the build fails, fix the issues and re-run until it passes");
+            sb.AppendLine($"6. Run the build/test command to verify: {_teamConfig.VerifyCommand}");
+            sb.AppendLine("7. If the build fails, fix the issues and re-run until it passes");
         }
         else
         {
-            sb.AppendLine("5. If a build command is available, run it to verify the resolution compiles");
+            sb.AppendLine("6. If a build command is available, run it to verify the resolution compiles");
         }
 
+        sb.AppendLine("8. If you stashed changes earlier, run `git stash pop` to restore them");
         sb.AppendLine();
         sb.AppendLine("When all conflicts are resolved and the code compiles, exit normally.");
 

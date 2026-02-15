@@ -110,7 +110,6 @@ public class ProjectSettings
     public void Save(string targetDirectory)
     {
         var settingsPath = Path.Combine(targetDirectory, SettingsFileName);
-        LastUpdated = DateTime.UtcNow;
 
         try
         {

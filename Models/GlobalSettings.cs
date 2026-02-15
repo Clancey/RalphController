@@ -61,7 +61,6 @@ public class GlobalSettings
                 Directory.CreateDirectory(SettingsDirectory);
             }
 
-            LastUpdated = DateTime.UtcNow;
             var json = JsonSerializer.Serialize(this, JsonOptions);
             File.WriteAllText(SettingsFilePath, json);
         }
